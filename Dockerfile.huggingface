@@ -18,6 +18,8 @@ ENV ENABLE_SIGNUP=true
 # Default model
 ENV DEFAULT_MODELS=gpt-4o,gpt-4o-mini
 
+# No VOLUME keyword - HF Spaces handles persistence automatically
+
 EXPOSE 7860
 
 CMD ["bash", "start.sh"]

@@ -22,8 +22,8 @@ ENV DEFAULT_MODELS=${DEFAULT_MODELS:-gpt-4o,gpt-4o-mini}
 ENV RAG_EMBEDDING_ENGINE=${RAG_EMBEDDING_ENGINE:-}
 ENV ENABLE_RAG_WEB_LOADER_SSL_VERIFICATION=${ENABLE_RAG_WEB_LOADER_SSL_VERIFICATION:-false}
 
-# Data persistence - Railway volume will mount here
-VOLUME /app/backend/data
+# Data persistence - Railway volume will be mounted via Railway dashboard
+# No VOLUME keyword needed - Railway handles this automatically
 
 EXPOSE 8080
 

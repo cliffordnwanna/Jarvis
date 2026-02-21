@@ -17,8 +17,8 @@ ENV ENABLE_SIGNUP=true
 # Default models
 ENV DEFAULT_MODELS=gpt-4o,gpt-4o-mini
 
-# Data persistence
-VOLUME /app/backend/data
+# Data persistence - Fly.io volume will be mounted via fly.toml
+# No VOLUME keyword needed
 
 EXPOSE 8080
 
