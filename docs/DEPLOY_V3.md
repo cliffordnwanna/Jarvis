@@ -6,6 +6,14 @@
 - [ ] Code committed to GitHub
 - [ ] Railway account ready
 
+# Deploy JARVIS v3 Orchestrator to Railway - Quick Guide
+
+## Pre-Flight Checklist
+
+- [ ] `.env` file created with at least `OPENAI_API_KEY`
+- [ ] Code committed to GitHub
+- [ ] Railway account ready
+
 ## Step-by-Step (15 minutes)
 
 ### 1. Push to GitHub (2 min)
@@ -19,42 +27,92 @@ git push origin main
 ### 2. Create Railway Project (1 min)
 
 1. Go to [railway.app](https://railway.app)
-2. **New Project** → **Empty Project**
+2. **+ New Project** → **Empty Project**
 3. Name it: `jarvis-personal-ai`
 
-### 3. Deploy LiteLLM Service (5 min)
+### 3. Deploy from GitHub Repo (Auto-detects Compose) (5 min)
 
-1. **New Service** → **GitHub Repo** → Select your `Jarvis` repo
-2. **Settings:**
-   - Service Name: `litellm`
-   - Dockerfile Path: `Dockerfile.litellm`
-3. **Variables** (click "New Variable"):
-   ```
-   OPENAI_API_KEY=sk-...
-   ANTHROPIC_API_KEY=sk-ant-...
-   OPENROUTER_API_KEY=sk-or-...
-   PORT=4000
-   ```
-4. **Deploy** (takes 3-4 min)
-5. **Note the internal hostname** (e.g., `litellm.railway.internal`)
+**✅ FIXED – Railway Deployment Error: "Dockerfile `Dockerfile` does not exist"**  
+This error happens because Railway sometimes ignores `docker-compose.yml` during GitHub deploy and falls back to Nixpacks build mode (which looks for a root `Dockerfile`).  
 
-### 4. Deploy Open WebUI Service (5 min)
+**You do NOT need to install Docker on Railway.**  
+**You do NOT remove `docker-compose.yml`.**  
+**Best fix in 2026:** Use **Empty Project + drag-and-drop** your `docker-compose.yml` (official recommended method).  
 
-1. **New Service** → **GitHub Repo** → Same repo
-2. **Settings:**
-   - Service Name: `open-webui`
-   - Dockerfile Path: `Dockerfile.openwebui`
-3. **Variables:**
+#### Exact 10-Minute Fix (Start Fresh)
+
+##### 1. Delete the broken project (if you have one)
+- Go to Railway dashboard  
+- Find your `jarvis-personal-ai` project → **Settings** → **Delete Project**
+
+##### 2. Create Empty Project + Drag Compose (this avoids the error 100%)
+1. Click **+ New Project** → **Empty Project**  
+2. Name it `jarvis-personal-ai`  
+3. **Drag and drop** your `docker-compose.yml` file directly onto the empty canvas (from your local folder)  
+   → Railway will instantly import **two services**:
+   - `open-webui` 
+   - `litellm`  
+   (You will see the services appear with the correct images from your compose file)
+
+##### 3. Add Environment Variables
+
+**litellm service** → Variables tab → Add:
+- `OPENAI_API_KEY` = `sk-...` (your OpenAI key – test this first)
+- `ANTHROPIC_API_KEY` = `sk-ant-...` (optional for now)
+- `LITELLM_CONFIG` = `/app/litellm_config.yaml` 
+
+**open-webui service** → Variables tab → Add:
+- `OPENAI_API_BASE_URL` = `http://litellm:4000` 
+- `OPENAI_API_KEY` = `sk-anything` (dummy)
+- `WEBUI_SECRET_KEY` = `generate-a-32-char-random-string-here` (use https://random.org/strings/)
+
+##### 4. Set Public URL
+- Select **open-webui** service  
+- **Networking** tab → **Generate Domain**  
+- Copy the URL (e.g. `https://jarvis-xxx.up.railway.app`)
+
+##### 5. Deploy
+- Click **Deploy** (top right)  
+- Wait 3–6 minutes until both services are **green ✓**
+
+**Note:** If Railway doesn't auto-detect compose, manually add services:
+- **+ New** → **GitHub Repo** for `litellm` service (use Dockerfile.litellm)
+- **+ New** → **GitHub Repo** for `open-webui` service (use Dockerfile.openwebui)
+
+### 4. Configure JARVIS in WebUI (2 min)
+
+1. Open your Railway public URL (e.g., `https://open-webui-xxx.up.railway.app`)
+2. **Create admin account**
+3. **Admin Panel** → **Settings** → **Pipelines**
+4. **Add Pipeline:**
+   - Open `pipelines/merge_thinking_orchestrator.py` in your IDE
+   - Copy ALL contents (280 lines)
+   - Paste into Pipeline editor
+   - **Save**
+5. **Enable the pipeline** (toggle switch)
+6. **Configure Valves** (click settings icon):
    ```
-   OPENAI_API_BASE_URL=http://litellm.railway.internal:4000/v1
-   OPENAI_API_KEY=sk-jarvis-railway
-   WEBUI_SECRET_KEY=<RANDOM_32_CHAR_STRING>
-   ENABLE_SIGNUP=true
-   DEFAULT_MODELS=jarvis-gpt
-   PORT=8080
+   monthly_budget_usd: 50
+   max_context_tokens: 8000
+   enable_orchestrator: true
+   enable_cost_tracking: true
    ```
-4. **Networking** → **Generate Domain** (get public URL)
-5. **Deploy** (takes 3-4 min)
+   - **Save**
+
+### 5. Test Merge Thinking (1 min)
+
+1. Select model: `jarvis-gpt`
+2. Send: **"How should I price my SaaS product?"**
+3. JARVIS should reply: **"How would YOU handle this?"**
+4. Answer: **"I'd charge $99/month based on competitors"**
+5. JARVIS merges perspectives with research
+
+### 6. Check Cost Tracking
+
+After your first merge, check the data volume:
+
+1. Railway → `open-webui` service → **Volumes** tab
+2. Download `jarvis_cost_tracking.json` to verify tracking works
 
 ### 5. Configure JARVIS (2 min)
 
