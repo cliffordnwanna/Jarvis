@@ -1,0 +1,25 @@
+FROM ghcr.io/open-webui/open-webui:main
+
+# Fly.io configuration
+ENV PORT=8080
+ENV HOST=0.0.0.0
+
+# These will be set via fly secrets
+ENV WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+ENV OPENAI_API_KEY=${OPENAI_API_KEY}
+
+# Use OpenAI directly
+ENV OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-https://api.openai.com/v1}
+
+# Enable signup for first user (becomes admin)
+ENV ENABLE_SIGNUP=true
+
+# Default models
+ENV DEFAULT_MODELS=gpt-4o,gpt-4o-mini
+
+# Data persistence
+VOLUME /app/backend/data
+
+EXPOSE 8080
+
+CMD ["bash", "start.sh"]
