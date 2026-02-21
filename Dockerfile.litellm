@@ -1,3 +1,6 @@
+# DEPRECATED: This file is for local development only
+# Railway uses the root Dockerfile instead
+# To use locally: docker build -f Dockerfile.litellm -t jarvis-litellm .
 FROM ghcr.io/berriai/litellm:main-latest
 
 COPY litellm_config.yaml /app/litellm_config.yaml

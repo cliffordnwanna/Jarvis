@@ -1,3 +1,5 @@
+# DEPRECATED: This file is for local development only
+# Railway uses the root Dockerfile instead
 FROM ghcr.io/open-webui/open-webui:main
 
 # Minimal configuration for cloud deployment

@@ -31,12 +31,12 @@ npm-debug.log
 .DS_Store
 Thumbs.db
 
-# Docs
+# Docs (not needed in Docker image)
 docs/
 *.md
 !README.md
 
-# Environment
+# Environment (secrets set via Railway dashboard)
 .env
 .env.local
 .env.example
@@ -44,3 +44,12 @@ docs/
 # Logs
 *.log
 logs/
+
+# Local-only files (not needed for Railway)
+docker-compose.yml
+docker-compose.local.yml
+Dockerfile.litellm
+Dockerfile.openwebui
+test-local.bat
+test-local.sh
+railway-env-template.txt
