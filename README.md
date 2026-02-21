@@ -32,15 +32,25 @@ The best personal AI in the world — browser + voice + memory + merge-thinking 
 
 ### ☁️ Cloud Deployment Options
 
-#### Option 1: Hugging Face Spaces (100% FREE Forever) ⭐ RECOMMENDED
-- ✅ **Completely free** (no credit card needed)
-- ✅ 16GB RAM, 8 vCPU, 50GB disk (better than paid Render!)
-- ✅ Deploy in 10 minutes with complete setup guide
-- ✅ Includes Skills, Analytics, Memory, Web Search
-- ⚠️ Public by default, sleeps after 48h inactivity
-- ⏱️ **Total setup time:** 25 minutes (deploy + configure)
+#### Option 1: Railway ($5/month after $5 trial) ⭐ RECOMMENDED
+- ✅ **Most reliable** — No hanging, crashes, or failures
+- ✅ **Fast** — Excellent performance
+- ✅ **Simple** — Deploy directly from GitHub in 10 minutes
+- ✅ **Works everywhere** — Desktop, mobile, all platforms
+- ✅ Voice features, persistent storage, auto-SSL
+- 💰 **Cost:** $5 free trial, then $5-10/month
+- ⏱️ **Total setup time:** 20 minutes
 
-**Complete guide:** [docs/DEPLOY_HF_SPACES.md](docs/DEPLOY_HF_SPACES.md) ← **Start here!**
+**Complete guide:** [docs/DEPLOY_RAILWAY_SIMPLE.md](docs/DEPLOY_RAILWAY_SIMPLE.md) ← **Start here!**
+
+#### Option 2: Hugging Face Spaces (100% FREE Forever)
+- ✅ **Completely free** (no credit card needed)
+- ✅ 16GB RAM, 8 vCPU, 50GB disk
+- ⚠️ **Slow/unstable** — May hang frequently
+- ⚠️ Public by default, sleeps after 48h inactivity
+- ⏱️ **Setup time:** 25 minutes
+
+**Guide:** [docs/DEPLOY_HF_SPACES.md](docs/DEPLOY_HF_SPACES.md)
 
 #### Option 2: Google Cloud Run (FREE $300 credit, then ~$5/month)
 - ✅ Production-ready, auto-scaling
