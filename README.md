@@ -2,22 +2,53 @@
 
 The best personal AI in the world — browser + voice + memory + merge-thinking + multi-LLM (Claude, GPT, Llama, DeepSeek, etc.) — fully yours, always-on, no app needed.
 
-## Quick Start (Local)
+## Quick Start
 
-```bash
-cp .env.example .env
-# Edit .env with your API keys (at minimum: OPENAI_API_KEY)
+### 🏠 Local Development (Recommended - 5 min)
 
-docker compose up -d
-```
+**Easiest and most reliable option for testing:**
 
-Open **http://localhost:8080** → Create admin account → Select `jarvis-gpt` → Start chatting.
+1. **Clone and setup:**
+   ```bash
+   git clone <your-repo>
+   cd Jarvis
+   cp .env.example .env
+   # Add your OPENAI_API_KEY to .env
+   ```
 
-## Quick Start (Railway)
+2. **Start services:**
+   ```bash
+   docker-compose up -d
+   ```
 
-See [docs/deployment.md](docs/deployment.md) for full Railway deployment guide.
+3. **Access JARVIS:**
+   - Open WebUI: `http://localhost:8080`
+   - Create admin account
+   - Upload v3 orchestrator pipeline (see [DEPLOY_LOCAL.md](docs/DEPLOY_LOCAL.md))
 
-**TL;DR:** Deploy two services from this repo — `Dockerfile.litellm` (LLM proxy) and `Dockerfile.openwebui` (UI) — set your API keys, and you're live.
+**Full guide:** [docs/DEPLOY_LOCAL.md](docs/DEPLOY_LOCAL.md)
+
+---
+
+### ☁️ Cloud Deployment Options
+
+#### Option 1: Render (Easiest Cloud Deploy)
+- ✅ Better free tier than Railway (1GB disk vs 500MB)
+- ✅ Simpler setup, auto-detects Dockerfiles
+- ✅ No volume configuration needed
+- ⏱️ **Deploy time:** 10 minutes
+
+**Full guide:** [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)
+
+#### Option 2: Railway (Advanced)
+- ⚠️ Requires manual volume configuration (500MB → 5GB)
+- ⚠️ More complex multi-service setup
+- ✅ Good for production with paid plan
+- ⏱️ **Deploy time:** 20 minutes
+
+**Full guide:** [docs/DEPLOY_V3.md](docs/DEPLOY_V3.md)
+
+**Note:** If you're experiencing "disk full" errors on Railway, use Render or local deployment instead.
 
 ## Available Models
 
