@@ -32,23 +32,37 @@ The best personal AI in the world — browser + voice + memory + merge-thinking 
 
 ### ☁️ Cloud Deployment Options
 
-#### Option 1: Render (Easiest Cloud Deploy)
-- ✅ Better free tier than Railway (1GB disk vs 500MB)
-- ✅ Simpler setup, auto-detects Dockerfiles
-- ✅ No volume configuration needed
-- ⏱️ **Deploy time:** 10 minutes
+#### Option 1: Hugging Face Spaces (100% FREE Forever) ⭐ RECOMMENDED
+- ✅ **Completely free** (no credit card needed)
+- ✅ 16GB RAM, 8 vCPU, 50GB disk (better than paid Render!)
+- ✅ Deploy in 10 minutes with complete setup guide
+- ✅ Includes Skills, Analytics, Memory, Web Search
+- ⚠️ Public by default, sleeps after 48h inactivity
+- ⏱️ **Total setup time:** 25 minutes (deploy + configure)
 
-**Full guide:** [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md)
+**Complete guide:** [docs/DEPLOY_HF_SPACES.md](docs/DEPLOY_HF_SPACES.md) ← **Start here!**
 
-#### Option 2: Railway (Advanced)
-- ⚠️ Requires manual volume configuration (500MB → 5GB)
-- ⚠️ More complex multi-service setup
-- ✅ Good for production with paid plan
-- ⏱️ **Deploy time:** 20 minutes
+#### Option 2: Google Cloud Run (FREE $300 credit, then ~$5/month)
+- ✅ Production-ready, auto-scaling
+- ✅ $300 free credit (90 days)
+- ✅ Always Free tier after credits
+- ✅ Private by default
+- ⏱️ **Cost after credits:** $5-7/month
 
-**Full guide:** [docs/DEPLOY_V3.md](docs/DEPLOY_V3.md)
+**Full guide:** [docs/DEPLOY_FREE_TIER.md](docs/DEPLOY_FREE_TIER.md)
 
-**Note:** If you're experiencing "disk full" errors on Railway, use Render or local deployment instead.
+#### Option 3: Fly.io (FREE tier available)
+- ✅ 3GB RAM free tier
+- ✅ Simple deployment
+- ✅ No credit card for free tier
+- ⏱️ **Cost after free tier:** $5-10/month
+
+**Full guide:** [docs/DEPLOY_FREE_TIER.md](docs/DEPLOY_FREE_TIER.md)
+
+#### ~~Option 4: Render~~ (NOT RECOMMENDED - $19/month)
+#### ~~Option 5: Railway~~ (NOT RECOMMENDED - Disk space issues)
+
+**See [docs/DEPLOY_FREE_TIER.md](docs/DEPLOY_FREE_TIER.md) for complete comparison of all free/cheap hosting options.**
 
 ## Available Models
 
