@@ -1,5 +1,16 @@
 # JARVIS – Railway Deployment Guide
 
+## Which Pipeline to Deploy?
+
+**Choose one:**
+
+| Pipeline | Best For | Token Usage | Cost/Merge | Complexity |
+|----------|----------|-------------|------------|------------|
+| **v1** (merge_thinking.py) | Quick start, simple testing | 15,000 | $0.038 | Low |
+| **v3** (merge_thinking_orchestrator.py) | Production use, cost optimization | 3,000 | $0.008 | Medium |
+
+**Recommendation:** Deploy **v3 orchestrator** directly — it has 85% cost savings and built-in budget management.
+
 ## Architecture on Railway
 
 Railway doesn't support multi-container `docker-compose.yml` natively. Instead, you deploy **two separate services** in one Railway project that communicate via Railway's internal networking.
@@ -86,10 +97,17 @@ git push origin main
 
 In Open WebUI (logged in as admin):
 
-1. **Models** → Select `jarvis-gpt` → Edit → Paste your system prompt
+1. **Models** → Select `jarvis-gpt` → Edit → Paste your system prompt from `docs/system_prompt.md`
 2. **Settings → Personalization → Memory** → Enable
 3. **Admin Panel → Web Search** → Enable DuckDuckGo
-4. **Pipelines** → Add New → Paste contents of `pipelines/merge_thinking.py` → Save & Enable
+4. **Pipelines** → Add New:
+   - **For v3 (recommended):** Copy contents of `pipelines/merge_thinking_orchestrator.py` → Paste → Save & Enable
+   - **For v1 (simple):** Copy contents of `pipelines/merge_thinking.py` → Paste → Save & Enable
+5. **Configure Pipeline Valves** (v3 only):
+   - Click the pipeline → Settings icon
+   - Set `monthly_budget_usd` to your budget (default: $50)
+   - Adjust `max_context_tokens` if needed (default: 8000)
+   - Save
 
 ## Troubleshooting
 
