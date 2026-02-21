@@ -1,0 +1,50 @@
+model_list:
+  # ── OpenAI (test this first) ──────────────────────────
+  - model_name: jarvis-gpt
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: jarvis-gpt-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── Anthropic (Claude) ────────────────────────────────
+  - model_name: jarvis-claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: jarvis-claude-fast
+    litellm_params:
+      model: anthropic/claude-3-haiku-20240307
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ── OpenRouter (100+ models, one key) ─────────────────
+  # Use any model from https://openrouter.ai/models
+  - model_name: jarvis-router-claude
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: jarvis-router-gpt
+    litellm_params:
+      model: openrouter/openai/gpt-4o
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: jarvis-router-llama
+    litellm_params:
+      model: openrouter/meta-llama/llama-3.1-70b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: jarvis-router-deepseek
+    litellm_params:
+      model: openrouter/deepseek/deepseek-chat
+      api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  num_retries: 2
+  request_timeout: 120

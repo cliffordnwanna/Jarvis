@@ -1,0 +1,37 @@
+# ============================================
+# Railway Environment Variables Template
+# ============================================
+# Copy these into Railway → Service → Variables
+
+# ──────────────────────────────────────────
+# FOR LITELLM SERVICE:
+# ──────────────────────────────────────────
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
+PORT=4000
+
+# ──────────────────────────────────────────
+# FOR OPEN-WEBUI SERVICE:
+# ──────────────────────────────────────────
+OPENAI_API_BASE_URL=http://litellm.railway.internal:4000/v1
+OPENAI_API_KEY=sk-jarvis-railway
+WEBUI_SECRET_KEY=<GENERATE_RANDOM_STRING_HERE>
+ENABLE_SIGNUP=true
+DEFAULT_MODELS=jarvis-gpt
+PORT=8080
+
+# ──────────────────────────────────────────
+# OPTIONAL (for Phase 2):
+# ──────────────────────────────────────────
+ELEVENLABS_API_KEY=
+PUSHOVER_USER=
+PUSHOVER_TOKEN=
+
+# ──────────────────────────────────────────
+# NOTES:
+# ──────────────────────────────────────────
+# 1. Generate WEBUI_SECRET_KEY: Use a password generator (32+ chars)
+# 2. The litellm.railway.internal hostname is auto-assigned by Railway
+#    Check your LiteLLM service's "Networking" tab for the exact hostname
+# 3. Start with just OPENAI_API_KEY to test, add others later
