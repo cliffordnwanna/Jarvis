@@ -1,4 +1,7 @@
-FROM ghcr.io/open-webui/open-webui:main
+# Use ollama tag (CUDA-free) to reduce image size for Railway free tier
+# The :main image is 4.6GB, exceeding Railway's 4GB limit
+# The :ollama tag is ~2GB and works with external APIs (OpenAI, etc.)
+FROM ghcr.io/open-webui/open-webui:ollama
 
 # Railway configuration
 ENV PORT=8080
