@@ -1,18 +1,11 @@
-# Deploy JARVIS v3 Orchestrator to Railway - Quick Guide
+# Deploy JARVIS v3 Orchestrator to Railway - Complete Guide
 
-## Pre-Flight Checklist
+## Pre-Flight Checklist ✅
 
-- [ ] `.env` file created with at least `OPENAI_API_KEY`
-- [ ] Code committed to GitHub
-- [ ] Railway account ready
-
-# Deploy JARVIS v3 Orchestrator to Railway - Quick Guide
-
-## Pre-Flight Checklist
-
-- [ ] `.env` file created with at least `OPENAI_API_KEY`
-- [ ] Code committed to GitHub
-- [ ] Railway account ready
+- [ ] `.env` file created with at least `OPENAI_API_KEY` (copy from `.env.example`)
+- [ ] Code committed to GitHub (your repo must be public or Railway connected)
+- [ ] Railway account ready ([railway.app](https://railway.app) - free tier available)
+- [ ] OpenAI API key ready (get from [platform.openai.com/api-keys](https://platform.openai.com/api-keys))
 
 ## Step-by-Step (15 minutes)
 
@@ -30,124 +23,221 @@ git push origin main
 2. **+ New Project** → **Empty Project**
 3. Name it: `jarvis-personal-ai`
 
-### 3. Deploy from GitHub Repo (Auto-detects Compose) (5 min)
+### 3. Deploy LiteLLM Service (5 min)
 
-**✅ FIXED – Railway Deployment Error: "Dockerfile `Dockerfile` does not exist"**  
-This error happens because Railway sometimes ignores `docker-compose.yml` during GitHub deploy and falls back to Nixpacks build mode (which looks for a root `Dockerfile`).  
+**Railway doesn't support docker-compose.yml multi-service deploys.** You need to create **two separate services** in one project.
 
-**You do NOT need to install Docker on Railway.**  
-**You do NOT remove `docker-compose.yml`.**  
-**Best fix in 2026:** Use **Empty Project + drag-and-drop** your `docker-compose.yml` (official recommended method).  
+#### 3.1 Create LiteLLM Service
 
-#### Exact 10-Minute Fix (Start Fresh)
+1. In your Railway project → **+ New** → **GitHub Repo**
+2. Select your `Jarvis` repository
+3. **Service Settings:**
+   - Click the service → **Settings** tab
+   - **Service Name:** `litellm`
+   - **Root Directory:** `/` (leave default)
+   - **Build:**
+     - **Builder:** Docker
+     - **Dockerfile Path:** `Dockerfile.litellm`
+   - **Deploy:**
+     - **Start Command:** (leave empty, Dockerfile handles it)
 
-##### 1. Delete the broken project (if you have one)
-- Go to Railway dashboard  
-- Find your `jarvis-personal-ai` project → **Settings** → **Delete Project**
+4. **Add Environment Variables:**
+   - Click **Variables** tab → **+ New Variable**
+   - Add these one by one:
+     ```
+     OPENAI_API_KEY=sk-proj-...
+     PORT=4000
+     ```
+   - **Optional (add later):**
+     ```
+     ANTHROPIC_API_KEY=sk-ant-...
+     OPENROUTER_API_KEY=sk-or-...
+     ```
 
-##### 2. Create Empty Project + Drag Compose (this avoids the error 100%)
-1. Click **+ New Project** → **Empty Project**  
-2. Name it `jarvis-personal-ai`  
-3. **Drag and drop** your `docker-compose.yml` file directly onto the empty canvas (from your local folder)  
-   → Railway will instantly import **two services**:
-   - `open-webui` 
-   - `litellm`  
-   (You will see the services appear with the correct images from your compose file)
+5. **Note the Internal Hostname:**
+   - Click **Networking** tab
+   - You'll see something like: `litellm.railway.internal`
+   - **Copy this** — you'll need it for Open WebUI
 
-##### 3. Add Environment Variables
+6. **Deploy:**
+   - Click **Deploy** (top right)
+   - Wait 3-4 minutes
+   - Check **Deployments** tab — should show "Success ✓"
+   - Check **Logs** — should see: `Uvicorn running on http://0.0.0.0:4000`
 
-**litellm service** → Variables tab → Add:
-- `OPENAI_API_KEY` = `sk-...` (your OpenAI key – test this first)
-- `ANTHROPIC_API_KEY` = `sk-ant-...` (optional for now)
-- `LITELLM_CONFIG` = `/app/litellm_config.yaml` 
+#### 3.2 Verify LiteLLM is Working
 
-**open-webui service** → Variables tab → Add:
-- `OPENAI_API_BASE_URL` = `http://litellm:4000` 
-- `OPENAI_API_KEY` = `sk-anything` (dummy)
-- `WEBUI_SECRET_KEY` = `generate-a-32-char-random-string-here` (use https://random.org/strings/)
+- In **Logs**, look for:
+  ```
+  INFO:     Started server process
+  INFO:     Uvicorn running on http://0.0.0.0:4000
+  ```
+- If you see errors about API keys, double-check your `OPENAI_API_KEY` variable
 
-##### 4. Set Public URL
-- Select **open-webui** service  
-- **Networking** tab → **Generate Domain**  
-- Copy the URL (e.g. `https://jarvis-xxx.up.railway.app`)
+### 4. Deploy Open WebUI Service (5 min)
 
-##### 5. Deploy
-- Click **Deploy** (top right)  
-- Wait 3–6 minutes until both services are **green ✓**
+#### 4.1 Create Open WebUI Service
 
-**Note:** If Railway doesn't auto-detect compose, manually add services:
-- **+ New** → **GitHub Repo** for `litellm` service (use Dockerfile.litellm)
-- **+ New** → **GitHub Repo** for `open-webui` service (use Dockerfile.openwebui)
+1. In the **same Railway project** → **+ New** → **GitHub Repo**
+2. Select your `Jarvis` repository again
+3. **Service Settings:**
+   - **Service Name:** `open-webui`
+   - **Root Directory:** `/`
+   - **Build:**
+     - **Builder:** Docker
+     - **Dockerfile Path:** `Dockerfile.openwebui`
 
-### 4. Configure JARVIS in WebUI (2 min)
+4. **Add Environment Variables:**
+   - Click **Variables** tab → **+ New Variable**
+   - **CRITICAL:** Replace `litellm.railway.internal` with YOUR actual LiteLLM hostname from step 3.1.5
+   
+   ```
+   OPENAI_API_BASE_URL=http://litellm.railway.internal:4000/v1
+   OPENAI_API_KEY=sk-jarvis-railway
+   WEBUI_SECRET_KEY=BAvR0YxlVoZus4iHwFKeUICq7z2MjLm
+   ENABLE_SIGNUP=true
+   DEFAULT_MODELS=jarvis-gpt
+   PORT=8080
+   RAG_EMBEDDING_ENGINE=
+   ```
+   
+   **Note:** `RAG_EMBEDDING_ENGINE=` (empty) disables ChromaDB to save disk space. You can enable RAG later by removing this variable.
+   
+   **Generate your own WEBUI_SECRET_KEY:**
+   - Go to [random.org/strings](https://www.random.org/strings/?num=1&len=32&digits=on&upperalpha=on&loweralpha=on&unique=on&format=plain)
+   - Copy the random string
+   - Replace the example above
 
-1. Open your Railway public URL (e.g., `https://open-webui-xxx.up.railway.app`)
-2. **Create admin account**
-3. **Admin Panel** → **Settings** → **Pipelines**
-4. **Add Pipeline:**
+5. **Generate Public Domain:**
+   - Click **Networking** tab
+   - Click **Generate Domain**
+   - You'll get a URL like: `https://open-webui-production-xxxx.up.railway.app`
+   - **Bookmark this** — this is your JARVIS URL
+
+6. **Configure Volume (CRITICAL):**
+   - Click **Data** tab
+   - You'll see a volume created automatically
+   - **Click the volume** → **Settings**
+   - **Size:** Change from 500MB to **5GB** (or more if you plan to upload many documents)
+   - Click **Save**
+   
+   **Why:** ChromaDB (vector database) needs ~2GB minimum. Railway's default 500MB causes "disk full" crashes.
+
+7. **Deploy:**
+   - Click **Deploy**
+   - Wait 3-4 minutes
+   - Check **Logs** — should see: `Application startup complete`
+
+#### 4.2 Verify Open WebUI is Working
+
+- Open your public URL in browser
+- You should see the Open WebUI login/signup page
+- If you get 502 errors, wait 2 more minutes (services still starting)
+
+### 5. Initial Setup in Open WebUI (3 min)
+
+#### 5.1 Create Admin Account
+
+1. Open your Railway public URL
+2. Click **Sign Up**
+3. Enter:
+   - **Name:** Your name
+   - **Email:** Your email
+   - **Password:** Strong password
+4. Click **Create Account**
+5. You're now logged in as admin
+
+#### 5.2 Verify Models are Available
+
+1. Look at the top of the chat interface
+2. Click the **model selector dropdown**
+3. You should see:
+   - `jarvis-gpt` (OpenAI GPT-4o)
+   - `jarvis-gpt-mini` (OpenAI GPT-4o-mini)
+   - If you added other API keys: `jarvis-claude`, `jarvis-router-*`, etc.
+
+**If no models appear:**
+- Check LiteLLM service logs for API key errors
+- Verify `OPENAI_API_BASE_URL` points to correct internal hostname
+- Restart Open WebUI service
+
+### 6. Upload v3 Orchestrator Pipeline (3 min)
+
+#### 6.1 Add the Pipeline
+
+1. Click your **profile icon** (top right) → **Admin Panel**
+2. Go to **Settings** → **Pipelines**
+3. Click **+ Add Pipeline** (or **+** button)
+4. **Copy the pipeline code:**
    - Open `pipelines/merge_thinking_orchestrator.py` in your IDE
-   - Copy ALL contents (280 lines)
-   - Paste into Pipeline editor
-   - **Save**
-5. **Enable the pipeline** (toggle switch)
-6. **Configure Valves** (click settings icon):
+   - Select ALL (Ctrl+A / Cmd+A)
+   - Copy (Ctrl+C / Cmd+C)
+5. **Paste into Pipeline editor:**
+   - Paste the code (Ctrl+V / Cmd+V)
+   - Click **Save** (bottom right)
+6. **Enable the pipeline:**
+   - Find "JARVIS Merge Orchestrator v3" in the list
+   - Toggle the switch to **ON** (should turn blue/green)
+
+#### 6.2 Configure Pipeline Settings (Valves)
+
+1. Click the **⚙️ settings icon** next to the pipeline
+2. You'll see configuration options (Valves)
+3. **Recommended settings:**
    ```
    monthly_budget_usd: 50
    max_context_tokens: 8000
    enable_orchestrator: true
    enable_cost_tracking: true
+   enable_pattern_learning: true
+   ask_user_first: true
    ```
-   - **Save**
+4. Click **Save**
 
-### 5. Test Merge Thinking (1 min)
+### 7. Test Merge Thinking (2 min)
 
-1. Select model: `jarvis-gpt`
-2. Send: **"How should I price my SaaS product?"**
-3. JARVIS should reply: **"How would YOU handle this?"**
-4. Answer: **"I'd charge $99/month based on competitors"**
-5. JARVIS merges perspectives with research
+#### 7.1 First Merge Test
 
-### 6. Check Cost Tracking
-
-After your first merge, check the data volume:
-
-1. Railway → `open-webui` service → **Volumes** tab
-2. Download `jarvis_cost_tracking.json` to verify tracking works
-
-### 5. Configure JARVIS (2 min)
-
-1. Open your Railway public URL (e.g., `https://open-webui-xxx.up.railway.app`)
-2. **Create admin account**
-3. **Admin Panel** → **Settings** → **Pipelines**
-4. **Add Pipeline:**
-   - Open `pipelines/merge_thinking_orchestrator.py` in your IDE
-   - Copy ALL contents (280 lines)
-   - Paste into Pipeline editor
-   - **Save**
-5. **Enable the pipeline** (toggle switch)
-6. **Configure Valves** (click settings icon):
+1. Go back to the **chat interface** (click "New Chat" if needed)
+2. **Select model:** Click dropdown → Choose `jarvis-gpt`
+3. **Send test question:**
    ```
-   monthly_budget_usd: 50
-   max_context_tokens: 8000
-   enable_orchestrator: true
-   enable_cost_tracking: true
+   How should I price my SaaS product?
    ```
-   - **Save**
+4. **Expected response:**
+   ```
+   How would YOU handle this?
+   ```
+   ✅ If you see this, merge thinking is working!
 
-### 6. Test Merge Thinking (1 min)
+5. **Answer with your approach:**
+   ```
+   I'd charge $99/month based on what competitors are charging
+   ```
 
-1. Select model: `jarvis-gpt`
-2. Send: **"How should I price my SaaS product?"**
-3. JARVIS should reply: **"How would YOU handle this?"**
-4. Answer: **"I'd charge $99/month based on competitors"**
-5. JARVIS merges perspectives with research
+6. **JARVIS will now:**
+   - Research independently (may use web search if enabled)
+   - Compare your approach with its analysis
+   - Show where you align and disagree
+   - Give final recommendation
 
-### 7. Check Cost Tracking
+#### 7.2 Verify Cost Tracking
 
-After your first merge, check the data volume:
+After your first merge:
 
-1. Railway → `open-webui` service → **Volumes**
-2. Download `jarvis_cost_tracking.json` to verify tracking works
+1. Go to Railway → `open-webui` service → **Data** tab
+2. You should see a volume mounted at `/app/backend/data`
+3. Files created:
+   - `jarvis_merge_state.json` — Current merge sessions
+   - `jarvis_merge_history.json` — Past 50 merges
+   - `jarvis_cost_tracking.json` — Cost per session + monthly total
+
+**To download and check:**
+- Railway doesn't have direct file browser
+- Use Railway CLI or check logs for cost summaries
+- Orchestrator will show budget warnings in responses when you hit 80%
+
+### 8. Complete Open WebUI Setup (5 min)
 
 ---
 
@@ -161,27 +251,65 @@ After your first merge, check the data volume:
 
 ---
 
-## Post-Deploy Customization
+#### 8.1 Add Your Custom System Prompt
 
-### Add Your System Prompt
+1. Click **model selector** → Click **⚙️** next to `jarvis-gpt`
+2. Scroll to **System Prompt** field
+3. **Open `docs/system_prompt.md` in your IDE**
+4. **Customize the User Context section:**
+   ```markdown
+   **Name:** [Your actual name]
+   **Background:** [Your profession, e.g., "Software engineer and entrepreneur"]
+   **Goals:** [Your current priorities, e.g., "Launch SaaS product, grow to $10k MRR"]
+   **Working style:** [e.g., "Direct feedback, no sugarcoating"]
+   **Pet peeves:** [e.g., "Vague advice, analysis paralysis"]
+   ```
+5. **Copy the entire customized prompt**
+6. **Paste into System Prompt field**
+7. Click **Save**
 
-1. **Models** → `jarvis-gpt` → **Edit**
-2. Open `docs/system_prompt.md`
-3. Customize the **User Context** section with your info
-4. Paste into System Prompt field
-5. **Save**
+#### 8.2 Enable Web Search (Critical for Merge Thinking)
 
-### Enable Web Search
+1. **Admin Panel** → **Settings** → **Web Search**
+2. **Enable:** Toggle ON
+3. **Search Engine:** Select **DuckDuckGo** (free, no API key needed)
+4. **Advanced (optional):**
+   - For better results, use **SearXNG** (requires self-hosting)
+   - Or **Brave Search** (requires API key from brave.com/search/api)
+5. Click **Save**
 
-1. **Admin Panel** → **Web Search**
-2. Enable **DuckDuckGo**
-3. **Save**
+**Why this matters:** Merge thinking tells the LLM to "research independently" — web search enables this.
 
-### Enable Memory
+#### 8.3 Enable Memory (Persistent Context)
 
-1. **Settings** → **Personalization** → **Memory**
-2. Toggle **ON**
-3. JARVIS will now remember facts across sessions
+1. Click your **profile icon** → **Settings**
+2. Go to **Personalization** → **Memory**
+3. Toggle **Enable Memory** to ON
+4. **Memory Settings:**
+   - **Auto-save:** ON (JARVIS remembers facts automatically)
+   - **Memory Scope:** Personal (only you see your memories)
+5. Click **Save**
+
+**Test memory:**
+- Tell JARVIS: "Remember that I'm building a SaaS product for small businesses"
+- In a new chat, ask: "What am I working on?"
+- JARVIS should recall your SaaS project
+
+#### 8.4 Enable Voice Input/Output (Optional)
+
+1. **Settings** → **Audio**
+2. **Speech-to-Text:**
+   - **Engine:** Browser (free, works offline)
+   - Or **OpenAI Whisper** (requires API key, more accurate)
+3. **Text-to-Speech:**
+   - **Engine:** Browser (free)
+   - Or **OpenAI TTS** (requires API key, better quality)
+4. Click **Save**
+
+**Test voice:**
+- Click the 🎤 microphone icon in chat
+- Speak your question
+- JARVIS will transcribe and respond
 
 ---
 
@@ -201,15 +329,177 @@ After your first merge, check the data volume:
 
 ---
 
-## Troubleshooting
+## Troubleshooting Common Issues
 
-| Issue | Solution |
-|-------|----------|
-| Pipeline not showing | Refresh page, check for syntax errors in paste |
-| "How would YOU handle this?" not triggering | Check pipeline is **enabled** (toggle on) |
-| Cost tracking not working | Check `enable_cost_tracking: true` in valves |
-| Models not appearing | Check LiteLLM service logs for API key errors |
-| 502 errors | Wait 2-3 more minutes, services still starting |
+### Models Not Appearing
+
+**Symptom:** Model dropdown is empty or shows "No models available"
+
+**Solutions:**
+1. **Check LiteLLM logs:**
+   - Railway → `litellm` service → **Deployments** → Click latest → **View Logs**
+   - Look for errors like: `AuthenticationError: Invalid API key`
+2. **Verify environment variables:**
+   - `litellm` service → **Variables** tab
+   - Ensure `OPENAI_API_KEY` starts with `sk-proj-` or `sk-`
+   - Check for typos or extra spaces
+3. **Check Open WebUI connection:**
+   - `open-webui` service → **Variables**
+   - Verify `OPENAI_API_BASE_URL=http://litellm.railway.internal:4000/v1`
+   - Make sure it ends with `/v1`
+4. **Restart services:**
+   - Click **Redeploy** on both services
+   - Wait 3-4 minutes
+
+### Pipeline Not Working
+
+**Symptom:** Asking "How should I..." doesn't trigger "How would YOU handle this?"
+
+**Solutions:**
+1. **Check pipeline is enabled:**
+   - Admin Panel → Pipelines
+   - Toggle should be ON (blue/green)
+2. **Check for syntax errors:**
+   - Click pipeline → **Edit**
+   - Look for red error indicators
+   - Common issue: Missing quotes or indentation
+3. **Verify trigger words:**
+   - Pipeline settings → `merge_trigger_words`
+   - Should include: `how should,best way,decide,decision`
+4. **Check `ask_user_first` setting:**
+   - Pipeline settings → `ask_user_first: true`
+5. **Test with exact phrase:**
+   - Try: "How should I price my product?" (known trigger)
+
+### 502 Bad Gateway Errors
+
+**Symptom:** Can't access Open WebUI URL, shows 502 error
+
+**Solutions:**
+1. **Wait longer:** Services take 3-6 minutes to fully start
+2. **Check deployment status:**
+   - Railway → `open-webui` service → **Deployments**
+   - Should show "Success ✓" not "Building..." or "Failed"
+3. **Check logs for crashes:**
+   - **View Logs** → Look for errors
+   - Common: `Port 8080 already in use` (shouldn't happen on Railway)
+4. **Verify PORT variable:**
+   - `open-webui` service → **Variables**
+   - Should have `PORT=8080`
+5. **Redeploy:**
+   - Click **Redeploy** → Wait 4-5 minutes
+
+### LiteLLM Connection Errors
+
+**Symptom:** Open WebUI loads but shows "Failed to connect to LiteLLM"
+
+**Solutions:**
+1. **Check internal hostname:**
+   - `litellm` service → **Networking** tab
+   - Copy the internal hostname (e.g., `litellm.railway.internal`)
+2. **Update Open WebUI variable:**
+   - `open-webui` service → **Variables**
+   - `OPENAI_API_BASE_URL=http://[YOUR_LITELLM_HOSTNAME]:4000/v1`
+   - Replace `[YOUR_LITELLM_HOSTNAME]` with actual hostname
+3. **Verify LiteLLM is running:**
+   - `litellm` service → **Logs**
+   - Should see: `Uvicorn running on http://0.0.0.0:4000`
+4. **Check both services are in same project:**
+   - Railway internal networking only works within same project
+
+### Cost Tracking Not Working
+
+**Symptom:** No cost data in files, no budget warnings
+
+**Solutions:**
+1. **Check valve settings:**
+   - Pipeline settings → `enable_cost_tracking: true`
+2. **Verify file permissions:**
+   - Open WebUI needs write access to `/app/backend/data`
+   - Railway volumes should handle this automatically
+3. **Check for errors in logs:**
+   - `open-webui` service → **Logs**
+   - Search for: `jarvis_cost_tracking`
+4. **Manual test:**
+   - Do 2-3 merges
+   - Check if `monthly_budget_usd` warnings appear in responses
+
+### Memory Not Persisting
+
+**Symptom:** JARVIS forgets things between sessions
+
+**Solutions:**
+1. **Verify memory is enabled:**
+   - Settings → Personalization → Memory → ON
+2. **Check volume is mounted:**
+   - Railway → `open-webui` service → **Data** tab
+   - Should show volume at `/app/backend/data`
+3. **Test memory manually:**
+   - Tell JARVIS: "Remember my name is [Your Name]"
+   - New chat → Ask: "What's my name?"
+   - Should recall correctly
+4. **Check for database errors:**
+   - Logs → Search for: `database` or `sqlite`
+
+### Database or Disk is Full Error
+
+**Symptom:** Logs show `chromadb.errors.InternalError: database or disk is full` and service crashes
+
+**This is the most common Railway deployment error.**
+
+**Solutions:**
+1. **Increase volume size (REQUIRED):**
+   - Railway → `open-webui` service → **Data** tab
+   - Click your volume (e.g., `open-webui-data`)
+   - **Settings** → **Size:** Change to **5GB** minimum
+   - Click **Save**
+   - **Redeploy** the service
+
+2. **Alternative - Disable RAG temporarily:**
+   - If you don't need document uploads yet
+   - **Variables** tab → Add:
+     ```
+     RAG_EMBEDDING_ENGINE=
+     ```
+   - This disables ChromaDB entirely (saves ~2GB)
+   - Redeploy
+
+3. **Check current disk usage:**
+   - **Metrics** tab → Look at "Disk Usage"
+   - Should be <80% after increasing volume
+
+4. **Clean up old data (if needed):**
+   - Railway CLI: `railway run bash`
+   - `du -sh /app/backend/data/*`
+   - Delete old ChromaDB data if migrating
+
+**Why this happens:**
+- Railway's default volume is 500MB
+- ChromaDB needs ~2GB for vector database initialization
+- Open WebUI data (chats, memory, uploads) adds more
+- **Solution:** Always set volume to 5GB+ before first deploy
+
+### Out of Memory (OOM) Errors
+
+**Symptom:** Deployment fails with "Out of Memory (OOM)"
+
+**Solutions:**
+1. **Upgrade Railway plan:**
+   - Free tier: 512MB RAM (not enough for Open WebUI)
+   - Hobby plan ($5/mo): 8GB RAM (recommended)
+   - Railway → Project Settings → Upgrade
+
+2. **Reduce memory usage (temporary):**
+   - Disable RAG: `RAG_EMBEDDING_ENGINE=`
+   - Disable memory: Don't enable Memory feature
+   - Use smaller models via LiteLLM
+
+3. **Check memory usage:**
+   - **Metrics** tab → "Memory Usage"
+   - Open WebUI typically needs 1-2GB RAM
+   - ChromaDB adds another 500MB-1GB
+
+**Note:** Railway's free tier is insufficient for production Open WebUI. Upgrade to Hobby ($5/mo) for reliable deployment.
 
 ---
 

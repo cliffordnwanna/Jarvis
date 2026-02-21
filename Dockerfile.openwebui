@@ -1,5 +1,9 @@
 FROM ghcr.io/open-webui/open-webui:main
 
+# Disable ChromaDB to prevent disk full errors on Railway's 500MB default volume
+ENV RAG_EMBEDDING_ENGINE=""
+ENV VECTOR_DB="none"
+
 EXPOSE 8080
 
 CMD ["bash", "start.sh"]
