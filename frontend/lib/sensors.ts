@@ -38,7 +38,9 @@ function loadLocationCache(): { lat: number; lng: number } | null {
   return null
 }
 
-export async function collectSensors(): Promise<SensorPayload> {
+export async function collectSensors(options?: { allowGpsPrompt?: boolean; gpsTimeoutMs?: number }): Promise<SensorPayload> {
+  const allowGpsPrompt = options?.allowGpsPrompt ?? false
+  const gpsTimeoutMs = options?.gpsTimeoutMs ?? 8000
   // GPS — three-tier fallback, never uses IP geolocation (VPN-poisoned).
   // Tier 1: live GPS from device
   // Tier 2: last cached GPS fix from localStorage
@@ -48,8 +50,17 @@ export async function collectSensors(): Promise<SensorPayload> {
   let gps_available = false
 
   try {
+    if (!allowGpsPrompt) {
+      try {
+        const result = await navigator.permissions.query({ name: "geolocation" })
+        if (result.state !== "granted") throw new Error("gps_not_granted")
+      } catch {
+        throw new Error("gps_not_granted")
+      }
+    }
+
     const position = await new Promise<GeolocationPosition>((resolve, reject) =>
-      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 8000, enableHighAccuracy: true })
+      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: gpsTimeoutMs, enableHighAccuracy: true })
     )
     lat = position.coords.latitude
     lng = position.coords.longitude
@@ -101,18 +112,22 @@ export async function collectSensors(): Promise<SensorPayload> {
  * Call this whenever you want to refresh location — it triggers a browser
  * permission prompt if the user hasn't decided yet.
  */
-export async function pushSensors(backendUrl: string): Promise<boolean> {
+export async function pushSensors(
+  backendUrl: string,
+  options?: { allowGpsPrompt?: boolean; gpsTimeoutMs?: number },
+): Promise<{ gpsAvailable: boolean; locationAvailable: boolean; error?: string }> {
   try {
-    const payload = await collectSensors()
+    const payload = await collectSensors(options)
     await fetch(`${backendUrl}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     })
-    return payload.gps_available
+    const locationAvailable = typeof payload.lat === "number" && typeof payload.lng === "number"
+    return { gpsAvailable: payload.gps_available, locationAvailable }
   } catch (e) {
     console.warn("Sensor push failed:", e)
-    return false
+    return { gpsAvailable: false, locationAvailable: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
 

@@ -62,6 +62,7 @@ function JARVISInner({
   const [worldState, setWorldState] = useState<Record<string, unknown>>({})
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [gpsGranted, setGpsGranted] = useState<boolean | null>(null)
+  const [locRequesting, setLocRequesting] = useState(false)
   const [chatStarted, setChatStarted] = useState(false)
   const settingsRef = useRef<HTMLDivElement>(null)
   const spokenUpToRef = useRef<Record<string, number>>({})
@@ -176,11 +177,32 @@ function JARVISInner({
     } catch {}
   }, [])
 
+  const requestLocation = useCallback(async () => {
+    setLocRequesting(true)
+    try {
+      const perm = await getGpsPermissionState()
+      if (perm === "denied") {
+        alert(
+          "Location permission is blocked for this site. Enable Location for this site in your browser settings, then try again.",
+        )
+        return
+      }
+      const res = await pushSensors(BACKEND, { allowGpsPrompt: true, gpsTimeoutMs: 20000 })
+      setGpsGranted(res.gpsAvailable)
+      await refreshWorldState()
+      if (!res.gpsAvailable) {
+        alert("Could not get GPS fix yet. If you allowed Location, try again outdoors or wait a few seconds.")
+      }
+    } finally {
+      setLocRequesting(false)
+    }
+  }, [BACKEND, refreshWorldState])
+
   // Push sensors then immediately refresh world state
   useEffect(() => {
     const push = async () => {
-      const hasGps = await pushSensors(BACKEND)
-      setGpsGranted(hasGps)
+      const res = await pushSensors(BACKEND, { allowGpsPrompt: false })
+      setGpsGranted(res.gpsAvailable)
       await refreshWorldState()
     }
     push()
@@ -427,12 +449,13 @@ function JARVISInner({
               <StatusChip label="Time" value={localTime} />
               {gpsGranted === false || (typeof city === "string" && city === "Unknown") ? (
                 <button
-                  onClick={() => pushSensors(BACKEND).then(setGpsGranted)}
+                  onClick={requestLocation}
+                  disabled={locRequesting}
                   className="flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/[0.08] px-3 py-1.5 text-xs text-amber-400/90 hover:bg-amber-500/[0.15] transition-colors"
                   title="Allow location — if already denied, reset permission in browser settings (lock icon in address bar)"
                 >
                   <span className="text-amber-500/60">Loc</span>
-                  <span>Allow location</span>
+                  <span>{locRequesting ? "Requesting..." : "Allow location"}</span>
                 </button>
               ) : (
                 <>

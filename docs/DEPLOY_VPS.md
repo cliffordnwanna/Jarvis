@@ -67,8 +67,35 @@ chmod +x scripts/deploy.sh
 ./deploy.sh
 
 
-./scripts/deploy.sh
-```
+Edit your deploy script:
+
+nano /var/www/jarvis/deploy.sh
+✅ REPLACE WITH THIS (CLEAN VERSION)
+#!/bin/bash
+
+set -e
+
+REPO="/var/www/jarvis"
+
+echo "==> Repo: $REPO"
+cd $REPO
+
+echo "==> Current branch:"
+git branch --show-current
+
+echo "==> Pulling latest code..."
+git pull origin main
+
+echo "==> Rebuilding Docker stack..."
+docker compose -p jarvis -f docker-compose.prod.yml up -d --build
+
+echo "==> Deployment complete"
+docker compose -p jarvis -f docker-compose.prod.yml ps
+🔥 STEP 2 — MAKE IT EXECUTABLE
+chmod +x /var/www/jarvis/deploy.sh
+🚀 STEP 3 — RUN AGAIN
+./deploy.sh
+
 
 What it does:
 - `git pull --ff-only origin main`
