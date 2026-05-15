@@ -1,9 +1,13 @@
-# Environment variables
+# ── Environment & secrets ─────────────────────────────────────────────────────
 .env
-.env.local
-.env.production
+.env.*
+!.env.example          # keep example files if you ever add them
+frontend/.env.local
+frontend/.env.production
+backend/google_credentials.json
+backend/google_token.json
 
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,25 +15,37 @@ __pycache__/
 .venv/
 venv/
 env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Docker
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/tsconfig.tsbuildinfo
+*.tgz
+
+# ── Docker ────────────────────────────────────────────────────────────────────
 docker-compose.override.yml
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Logs
+# ── Logs & data ───────────────────────────────────────────────────────────────
 *.log
 logs/
-
-# Data volumes (local)
 open-webui-data/

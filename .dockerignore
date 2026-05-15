@@ -1,55 +1,32 @@
-# Git
-.git
+# Keep the build context lean — only what the backend image needs reaches Docker
+
+# Git history
+.git/
 .gitignore
 
-# Python
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info
-dist
-build
-.venv
-venv
-env
+# Secrets — never bake into image
+.env
+.env.*
+backend/google_credentials.json
+backend/google_token.json
 
-# Node
-node_modules
-npm-debug.log
+# Frontend — not needed for backend image (Vercel builds it)
+frontend/
 
-# IDE
-.vscode
-.idea
-*.swp
-*.swo
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Docs
+docs/
+archive/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Docs (not needed in Docker image)
-docs/
-*.md
-!README.md
-
-# Environment (secrets set via Railway dashboard)
-.env
-.env.local
-.env.example
-
-# Logs
-*.log
-logs/
-
-# Local-only files (not needed for Railway)
-docker-compose.yml
-docker-compose.local.yml
-Dockerfile.litellm
-Dockerfile.openwebui
-test-local.bat
-test-local.sh
-railway-env-template.txt
