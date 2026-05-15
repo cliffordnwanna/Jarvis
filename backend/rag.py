@@ -120,6 +120,8 @@ async def embed_texts_openai(texts: list[str]) -> list[list[float]]:
     model = DEFAULT_EMBED_MODEL
     dims = DEFAULT_EMBED_DIMS
     batch_size = int(os.getenv("OPENAI_EMBED_BATCH_SIZE", "20"))
+    batch_sleep_s = float(os.getenv("OPENAI_EMBED_BATCH_SLEEP_S", "1.5"))
+    max_attempts = int(os.getenv("OPENAI_EMBED_MAX_ATTEMPTS", "6"))
     all_embeddings: list[list[float]] = []
 
     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
@@ -129,7 +131,7 @@ async def embed_texts_openai(texts: list[str]) -> list[list[float]]:
             if dims:
                 payload["dimensions"] = dims
 
-            for attempt in range(6):
+            for attempt in range(max_attempts):
                 resp = await client.post(
                     "https://api.openai.com/v1/embeddings",
                     headers={
@@ -141,7 +143,7 @@ async def embed_texts_openai(texts: list[str]) -> list[list[float]]:
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("retry-after", 0))
                     wait = retry_after if retry_after > 0 else (2 ** attempt) * 5
-                    print(f"  429 rate limit — waiting {wait}s (attempt {attempt + 1}/6)")
+                    print(f"  429 rate limit — waiting {wait}s (attempt {attempt + 1}/{max_attempts})")
                     await asyncio.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -150,11 +152,11 @@ async def embed_texts_openai(texts: list[str]) -> list[list[float]]:
                 break
             else:
                 raise RuntimeError(
-                    f"Embedding batch {batch_start // batch_size + 1} failed after 6 attempts (persistent 429)"
+                    f"Embedding batch {batch_start // batch_size + 1} failed after {max_attempts} attempts (persistent 429)"
                 )
 
             if batch_start + batch_size < len(texts):
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(batch_sleep_s)
 
     return all_embeddings
 
@@ -196,6 +198,55 @@ async def delete_source_chunks(user_id: str, source: str) -> None:
             params={"user_id": f"eq.{user_id}", "source": f"eq.{source}"},
         )
         resp.raise_for_status()
+
+
+async def delete_chunk_indices(user_id: str, source: str, chunk_indices: list[int]) -> None:
+    if not chunk_indices:
+        return
+    base_url = _supabase_url()
+    key = _supabase_key()
+    endpoint = f"{base_url}/rest/v1/rag_documents"
+    in_list = ",".join(str(i) for i in sorted(set(chunk_indices)))
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        resp = await client.delete(
+            endpoint,
+            headers=_rest_headers(key),
+            params={
+                "user_id": f"eq.{user_id}",
+                "source": f"eq.{source}",
+                "chunk_index": f"in.({in_list})",
+            },
+        )
+        resp.raise_for_status()
+
+
+async def get_existing_hashes(user_id: str, source: str) -> dict[int, str]:
+    """
+    Read existing (chunk_index -> content_hash) for a single source.
+    Used to avoid re-embedding unchanged chunks.
+    """
+    base_url = _supabase_url()
+    key = _supabase_key()
+    endpoint = f"{base_url}/rest/v1/rag_documents"
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        resp = await client.get(
+            endpoint,
+            headers=_rest_headers(key),
+            params={
+                "select": "chunk_index,content_hash",
+                "user_id": f"eq.{user_id}",
+                "source": f"eq.{source}",
+            },
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        out: dict[int, str] = {}
+        for r in rows:
+            try:
+                out[int(r["chunk_index"])] = str(r["content_hash"])
+            except Exception:
+                continue
+        return out
 
 
 async def upsert_chunks(user_id: str, chunks: list[RagChunk], embeddings: list[list[float]]) -> int:

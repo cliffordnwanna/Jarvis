@@ -56,6 +56,7 @@ function JARVISInner({
   const [panelOpen, setPanelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [worldStateOpen, setWorldStateOpen] = useState(false)
+  const [speechEnabled, setSpeechEnabled] = useState(true)
   const [nudges, setNudges] = useState<Nudge[]>([])
   const [goals, setGoals] = useState<any[]>([])
   const [worldState, setWorldState] = useState<Record<string, unknown>>({})
@@ -64,12 +65,50 @@ function JARVISInner({
   const [chatStarted, setChatStarted] = useState(false)
   const settingsRef = useRef<HTMLDivElement>(null)
   const spokenUpToRef = useRef<Record<string, number>>({})
+  const speechUnlockedRef = useRef(false)
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("jarvis_speech_enabled")
+      if (stored === "0") setSpeechEnabled(false)
+      if (stored === "1") setSpeechEnabled(true)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis_speech_enabled", speechEnabled ? "1" : "0")
+    } catch {}
+  }, [speechEnabled])
+
+  const unlockSpeech = useCallback(() => {
+    if (speechUnlockedRef.current) return
+    try {
+      if (!("speechSynthesis" in window)) return
+      const u = new SpeechSynthesisUtterance(" ")
+      u.volume = 0
+      window.speechSynthesis.speak(u)
+      speechUnlockedRef.current = true
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    if (!speechEnabled) return
+    const handler = () => {
+      unlockSpeech()
+      window.removeEventListener("pointerdown", handler, true)
+    }
+    window.addEventListener("pointerdown", handler, true)
+    return () => window.removeEventListener("pointerdown", handler, true)
+  }, [speechEnabled, unlockSpeech])
 
   // Auto-speak assistant messages — streams sentence-by-sentence while generating,
   // then speaks any remaining text when done.
   const { messages: chatMessages, isLoading } = useCopilotChatInternal()
   const prevLoadingRef = useRef(false)
   useEffect(() => {
+    if (!speechEnabled) return
+    if (!("speechSynthesis" in window)) return
     const wasLoading = prevLoadingRef.current
     prevLoadingRef.current = isLoading
 
@@ -108,11 +147,13 @@ function JARVISInner({
       toSpeak = newText
     }
 
+    if (!speechUnlockedRef.current) return
+
     spokenUpToRef.current[id] = alreadySpoken + toSpeak.length
     const utterance = new SpeechSynthesisUtterance(toSpeak)
     utterance.rate = 1.05
     window.speechSynthesis.speak(utterance)
-  }, [isLoading, chatMessages])
+  }, [isLoading, chatMessages, speechEnabled])
 
   // Close settings dropdown on outside click
   useEffect(() => {
@@ -375,9 +416,9 @@ function JARVISInner({
   const batteryDisplay = battery ? (isCharging ? `${battery} charging` : battery) : null
 
   return (
-    <div className="h-screen overflow-hidden bg-[#0a0f1a] text-slate-100">
+    <div className="h-[100dvh] min-h-[100dvh] overflow-hidden bg-[#0a0f1a] text-slate-100">
       <div className="mx-auto flex h-full max-w-5xl flex-col">
-        <header className="flex items-center justify-between px-5 py-4">
+        <header className="flex items-center justify-between px-4 sm:px-5 pt-[calc(1rem+env(safe-area-inset-top))] pb-3 sm:py-4">
           <div className="min-w-0">
             <div className="flex items-baseline gap-3">
               <h1 className="text-sm font-semibold tracking-wide text-white">JARVIS</h1>
@@ -431,6 +472,27 @@ function JARVISInner({
               {settingsOpen && (
                 <div className="absolute right-0 top-full mt-2 z-50 w-44 rounded-xl border border-white/10 bg-[#0d1424] py-1 shadow-xl">
                   <button
+                    onClick={() => setSpeechEnabled((v) => !v)}
+                    className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
+                  >
+                    Speech: {speechEnabled ? "On" : "Off"}
+                  </button>
+                  {speechEnabled && (
+                    <button
+                      onClick={() => {
+                        unlockSpeech()
+                        const u = new SpeechSynthesisUtterance("Audio enabled.")
+                        u.rate = 1.05
+                        window.speechSynthesis.cancel()
+                        window.speechSynthesis.speak(u)
+                        setSettingsOpen(false)
+                      }}
+                      className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
+                    >
+                      Test audio
+                    </button>
+                  )}
+                  <button
                     onClick={() => { setWorldStateOpen((v) => !v); setSettingsOpen(false) }}
                     className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
                   >
@@ -442,7 +504,7 @@ function JARVISInner({
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden px-5 pb-5">
+        <div className="flex-1 overflow-hidden px-3 sm:px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
           <div className="h-full rounded-2xl border border-white/10 bg-white/[0.02]">
             <div className="relative mx-auto h-full w-full max-w-3xl">
               {!chatStarted && (

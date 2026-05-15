@@ -98,6 +98,7 @@ html, body {
 .jarvis-chat .copilotKitInputContainer {
   border-top: 1px solid #1f2937 !important;
   padding: 12px 16px !important;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
   background: #0a0f1a !important;
 }
 
@@ -189,6 +190,18 @@ html, body {
 /* Empty messages area — transparent so our greeting overlay shows through */
 .jarvis-chat .copilotKitMessages {
   background: transparent !important;
+}
+
+/* Mobile tweaks */
+@media (max-width: 640px) {
+  .jarvis-chat [class*="Messages"],
+  .jarvis-chat [class*="messages"] {
+    padding: 14px 12px;
+  }
+
+  .jarvis-chat .copilotKitUserMessage > * {
+    max-width: 86% !important;
+  }
 }
 
 /* ── Code blocks in responses ────────────────────────────────────────────────── */

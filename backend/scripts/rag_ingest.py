@@ -19,8 +19,9 @@ from backend.rag import (
     DEFAULT_EMBED_DIMS,
     DEFAULT_EMBED_MODEL,
     chunk_markdown,
-    delete_source_chunks,
+    delete_chunk_indices,
     embed_texts_openai,
+    get_existing_hashes,
     iter_rag_sources,
     upsert_chunks,
 )
@@ -46,13 +47,26 @@ async def main() -> None:
         chunks = chunk_markdown(source=source_name, content=content, target_chars=target_chars)
         if not chunks:
             continue
-        texts = [c.content for c in chunks]
-        embeddings = await embed_texts_openai(texts)
-        await delete_source_chunks(user_id=user_id, source=source_name)
-        upserts = await upsert_chunks(user_id=user_id, chunks=chunks, embeddings=embeddings)
+        existing = await get_existing_hashes(user_id=user_id, source=source_name)
+        desired_indices = {c.chunk_index for c in chunks}
+        stale_indices = [idx for idx in existing.keys() if idx not in desired_indices]
+
+        changed_chunks = [c for c in chunks if existing.get(c.chunk_index) != c.content_hash]
+        if changed_chunks:
+            texts = [c.content for c in changed_chunks]
+            embeddings = await embed_texts_openai(texts)
+            upserts = await upsert_chunks(user_id=user_id, chunks=changed_chunks, embeddings=embeddings)
+        else:
+            upserts = 0
+
+        if stale_indices:
+            await delete_chunk_indices(user_id=user_id, source=source_name, chunk_indices=stale_indices)
+
         total_chunks += len(chunks)
         total_upserts += upserts
-        print(f"- {source_name}: chunks={len(chunks)} upserted={upserts}")
+        print(
+            f"- {source_name}: chunks={len(chunks)} updated={upserts} deleted={len(stale_indices)} unchanged={len(chunks) - upserts}"
+        )
 
     print(f"Done. chunks={total_chunks} upserted={total_upserts}")
 

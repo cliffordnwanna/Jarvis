@@ -69,6 +69,7 @@ If you enabled them in the UI already, the SQL above is harmless.
 In Supabase **SQL editor**, run the SQL from:
 
 - `backend/db/migrations/002_rag.sql`
+- `backend/db/migrations/003_rag_rpc.sql` (required for retrieval)
 
 Notes:
 - The table uses `vector(1536)` by default because `text-embedding-3-small` embeddings are 1536-dimensional by default.

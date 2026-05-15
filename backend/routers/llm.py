@@ -65,6 +65,8 @@ async def _inject_rag(payload: dict) -> dict:
         return payload
     if not os.getenv("SUPABASE_URL"):
         return payload
+    if not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+        return payload
     if not os.getenv("OPENAI_API_KEY"):
         return payload
 
