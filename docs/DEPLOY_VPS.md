@@ -58,9 +58,15 @@ RAG_ENABLED=true
 ## 2) Deploy / update (every time)
 
 From the repo root on the VPS:
+cd /var/www/jarvis
+nano deploy.sh
 
 ```bash
 chmod +x scripts/deploy.sh
+
+./deploy.sh
+
+
 ./scripts/deploy.sh
 ```
 
