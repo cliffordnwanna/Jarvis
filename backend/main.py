@@ -269,6 +269,13 @@ async def health():
     return {"status": "ok", "version": "3.0.0"}
 
 
+@app.get("/test/morning-briefing")
+async def test_morning_briefing():
+    from backend.scheduler import morning_weather_briefing
+    await morning_weather_briefing()
+    return {"status": "done"}
+
+
 @app.get("/world-state")
 async def get_world_state(user_id: str = Depends(get_current_user)):
     state = await cache_get(user_id)

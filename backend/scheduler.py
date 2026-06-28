@@ -145,9 +145,232 @@ async def recompute_strength_signals():
         logger.error(f"[scheduler] Strength signal error: {e}")
 
 
+async def morning_weather_briefing():
+    """
+    Runs at 3:00am Lagos time (2:00 UTC) every day.
+    Sends one nudge per user covering: weather, birthdays, overdue contacts, stale goals.
+    Uses GPT-4o-mini to write the final message naturally.
+    """
+    import httpx
+    import os
+    from openai import AsyncOpenAI
+    from backend.db.postgres import get_supabase
+
+    db = get_supabase()
+    oai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    try:
+        users = db.table("users").select("id, home_lat, home_lng, timezone").execute()
+    except Exception as e:
+        logger.error(f"[scheduler] morning_briefing: could not fetch users: {e}")
+        return
+
+    for user in (users.data or []):
+        user_id = user["id"]
+        lat = user.get("home_lat")
+        lng = user.get("home_lng")
+
+        # Fallback: pull coords from world_state cache
+        if not lat or not lng:
+            try:
+                ws = db.table("world_state").select("state").eq("user_id", user_id).maybe_single().execute()
+                if ws and ws.data:
+                    state = ws.data.get("state", {})
+                    lat = state.get("_meta", {}).get("lat")
+                    lng = state.get("_meta", {}).get("lng")
+            except Exception:
+                pass
+
+        # Skip if already sent today
+        try:
+            existing = db.table("nudge_history")\
+                .select("id")\
+                .eq("user_id", user_id)\
+                .eq("nudge_type", "morning_briefing")\
+                .gte("delivered_at", today_start.isoformat())\
+                .execute()
+            if existing.data:
+                logger.info(f"[scheduler] morning_briefing already sent to {user_id} today")
+                continue
+        except Exception:
+            pass
+
+        sections = []
+
+        # ── SECTION 1: WEATHER ──────────────────────────────────────────
+        if lat and lng:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as http:
+                    r = await http.get(
+                        "https://api.open-meteo.com/v1/forecast",
+                        params={
+                            "latitude": lat,
+                            "longitude": lng,
+                            "current": "temperature_2m,weathercode,precipitation",
+                            "hourly": "precipitation_probability",
+                            "daily": "temperature_2m_max,precipitation_probability_max,weathercode",
+                            "forecast_days": 2,
+                            "timezone": "auto",
+                        },
+                    )
+                    data = r.json()
+
+                current = data.get("current", {})
+                hourly  = data.get("hourly", {})
+                daily   = data.get("daily", {})
+
+                temp         = current.get("temperature_2m")
+                precip       = current.get("precipitation", 0) or 0
+                rain_probs   = hourly.get("precipitation_probability", [])
+                max_rain     = max(rain_probs[:10], default=0)
+                tomorrow_max = (daily.get("temperature_2m_max") or [None, None])[1]
+                tomorrow_rain = (daily.get("precipitation_probability_max") or [0, 0])[1] or 0
+
+                wmo = current.get("weathercode", 0)
+                if wmo == 0: condition = "clear"
+                elif wmo in [1, 2, 3]: condition = "partly cloudy"
+                elif wmo in [45, 48]: condition = "foggy"
+                elif wmo in [51, 53, 55, 61, 63, 65, 80, 81, 82]: condition = "rainy"
+                elif wmo in [95, 96, 99]: condition = "thunderstorm"
+                else: condition = "cloudy"
+
+                wx = f"Today: {temp}°C, {condition}."
+                if precip > 0.1:
+                    wx += " It's already raining — take an umbrella."
+                elif max_rain > 50:
+                    wx += f" Rain likely later ({max_rain}%) — take an umbrella."
+                if tomorrow_max:
+                    wx += f" Tomorrow: {tomorrow_max}°C"
+                    if tomorrow_rain > 50:
+                        wx += f", rain likely ({tomorrow_rain}%)"
+                    wx += "."
+
+                sections.append(wx)
+            except Exception as e:
+                logger.error(f"[scheduler] morning_briefing weather error for {user_id}: {e}")
+
+        # ── SECTION 2: BIRTHDAYS ────────────────────────────────────────
+        try:
+            people = db.table("people")\
+                .select("id, name, birthday")\
+                .eq("user_id", user_id)\
+                .not_.is_("birthday", "null")\
+                .execute()
+
+            birthday_lines = []
+            for person in (people.data or []):
+                try:
+                    bday = datetime.strptime(person["birthday"], "%Y-%m-%d").date()
+                    this_year = bday.replace(year=today.year)
+                    if this_year < today:
+                        this_year = bday.replace(year=today.year + 1)
+                    days_until = (this_year - today).days
+                    if days_until == 0:
+                        birthday_lines.append(f"🎂 Today is {person['name']}'s birthday!")
+                    elif days_until == 1:
+                        birthday_lines.append(f"🎂 {person['name']}'s birthday is tomorrow.")
+                    elif days_until == 2:
+                        birthday_lines.append(f"🎂 {person['name']}'s birthday is in 2 days.")
+                except Exception:
+                    pass
+
+            if birthday_lines:
+                sections.append(" ".join(birthday_lines))
+        except Exception as e:
+            logger.error(f"[scheduler] morning_briefing birthdays error for {user_id}: {e}")
+
+        # ── SECTION 3: OVERDUE CONTACTS ─────────────────────────────────
+        try:
+            overdue_res = db.table("people")\
+                .select("name, strength_signal, contact_frequency_days, last_contacted_at")\
+                .eq("user_id", user_id)\
+                .in_("strength_signal", ["cooling", "cold"])\
+                .limit(3)\
+                .execute()
+
+            if overdue_res.data:
+                names = [p["name"] for p in overdue_res.data]
+                if len(names) == 1:
+                    sections.append(f"👥 Reach out today: {names[0]} is going cold.")
+                else:
+                    sections.append(f"👥 People to reconnect with: {', '.join(names)}.")
+        except Exception as e:
+            logger.error(f"[scheduler] morning_briefing overdue error for {user_id}: {e}")
+
+        # ── SECTION 4: STALE GOALS ──────────────────────────────────────
+        try:
+            goals_res = db.table("goals")\
+                .select("title, last_touched_at, urgency")\
+                .eq("user_id", user_id)\
+                .eq("status", "active")\
+                .execute()
+
+            stale = []
+            for g in (goals_res.data or []):
+                last = g.get("last_touched_at")
+                if last:
+                    last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                    if (now - last_dt).days >= 5:
+                        stale.append(g["title"])
+                else:
+                    stale.append(g["title"])
+
+            if stale:
+                if len(stale) == 1:
+                    sections.append(f"🎯 Goal needing attention: {stale[0]}.")
+                else:
+                    sections.append(f"🎯 Goals needing attention: {', '.join(stale[:2])}.")
+        except Exception as e:
+            logger.error(f"[scheduler] morning_briefing goals error for {user_id}: {e}")
+
+        # ── ASSEMBLE & POLISH WITH GPT-4o-mini ──────────────────────────
+        if not sections:
+            logger.info(f"[scheduler] morning_briefing: nothing to report for {user_id}")
+            continue
+
+        raw = " ".join(sections)
+        try:
+            res = await oai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are JARVIS. Rewrite this morning briefing in 2-4 short natural sentences. "
+                            "Warm, direct, like a smart friend. No bullet points. No headers. "
+                            "Keep all the facts. Start with 'Good morning.'"
+                        ),
+                    },
+                    {"role": "user", "content": raw},
+                ],
+                max_tokens=200,
+            )
+            final_message = res.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"[scheduler] morning_briefing GPT polish failed: {e}")
+            final_message = "Good morning. " + raw
+
+        try:
+            db.table("nudge_history").insert({
+                "user_id": user_id,
+                "nudge_type": "morning_briefing",
+                "message": final_message,
+                "priority": "high",
+                "delivered_at": now.isoformat(),
+            }).execute()
+            logger.info(f"[scheduler] Morning briefing sent to {user_id}: {final_message[:100]}")
+        except Exception as e:
+            logger.error(f"[scheduler] morning_briefing insert error for {user_id}: {e}")
+
+
 def start_scheduler():
     scheduler.add_job(check_due_events, "interval", minutes=5, id="check_due_events", replace_existing=True)
     scheduler.add_job(check_birthdays, "cron", hour=8, minute=0, id="check_birthdays", replace_existing=True)
     scheduler.add_job(recompute_strength_signals, "cron", hour=0, minute=0, id="recompute_strength_signals", replace_existing=True)
+    # 3:00am Lagos time = 2:00am UTC (Lagos is UTC+1)
+    scheduler.add_job(morning_weather_briefing, "cron", hour=2, minute=0, id="morning_weather_briefing", replace_existing=True)
     scheduler.start()
-    logger.info("[scheduler] Started — checking reminders every 5 minutes, birthdays at 8am UTC")
+    logger.info("[scheduler] Started — reminders every 5min, birthdays 8am UTC, morning briefing 2:00am UTC (3am Lagos)")

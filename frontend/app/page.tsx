@@ -329,6 +329,12 @@ export default function HomePage() {
                 <span className="text-gray-400">{wb?.wind_speed_kmh} km/h</span>
               </div>
             )}
+            {wb?.tomorrow_max_c && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>🌤</span>
+                <span className="text-gray-400">Tomorrow {wb.tomorrow_max_c}°C</span>
+              </div>
+            )}
             <div className="flex items-center gap-1 px-3 py-2 ml-auto">
               <span className="text-gray-500">
                 {tmp?.timestamp
