@@ -16,8 +16,8 @@ pm2 start "uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 2" \
   --name jarvis-backend \
   --cwd $APP_DIR
 
-# Frontend — localhost only
-pm2 start "npm run start -- --port 3000 --hostname 127.0.0.1" \
+# Frontend — localhost only, port 3001 (3000 reserved for upjobs on this VPS)
+pm2 start "npm run start -- --port 3001 --hostname 127.0.0.1" \
   --name jarvis-frontend \
   --cwd $APP_DIR/frontend
 
@@ -29,5 +29,5 @@ echo "=== JARVIS is running ==="
 pm2 status
 echo ""
 echo "Backend: http://127.0.0.1:8000 (internal only)"
-echo "Frontend: http://127.0.0.1:3000 (internal only)"
+echo "Frontend: http://127.0.0.1:3001 (internal only)"
 echo "Public: https://89.167.93.25.sslip.io (via Caddy)"

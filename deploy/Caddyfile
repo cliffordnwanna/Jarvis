@@ -22,7 +22,7 @@
 
     # Frontend — everything else
     handle {
-        reverse_proxy 127.0.0.1:3000 {
+        reverse_proxy 127.0.0.1:3001 {
             header_up X-Real-IP {remote_host}
             header_up Host {host}
         }

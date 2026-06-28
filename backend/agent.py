@@ -85,5 +85,5 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
     return create_react_agent(
         model=llm,
         tools=tools,
-        state_modifier=system_prompt,
+        prompt=system_prompt,
     )
