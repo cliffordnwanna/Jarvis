@@ -105,28 +105,127 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
 
     print(f"[agent] called by user={user_id}, last_message={messages[-1] if messages else 'none'}")
 
-    # Inject world state + user_id + real date into system prompt
     from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+
     now_utc = datetime.now(timezone.utc)
-    today_str = now_utc.strftime("%A, %B %d, %Y")  # e.g. "Saturday, June 28, 2026"
     tomorrow_str = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
 
     world_state = await cache_get(user_id)
+
+    # Use user's local timezone from cached world state if available
+    user_tz_str = "UTC"
     if world_state:
-        loc = world_state.get("location", {})
-        # world_state uses "temporal" key (from world_state.py build_world_state)
-        t = world_state.get("temporal", world_state.get("time", {}))
-        env = world_state.get("environment", {})
-        wx = env.get("weather", world_state.get("weather", {}))
-        world_context = (
-            f"CURRENT WORLD STATE (already fetched — do not call get_world_state):\n"
-            f"- Time: {t.get('day_of_week')} {t.get('hour', now_utc.hour):02d}:{str(t.get('minute', now_utc.minute)).zfill(2)}, {t.get('date', today_str)}\n"
-            f"- Time of day: {t.get('time_of_day', '')}\n"
-            f"- Location: {loc.get('city')}, {loc.get('area', '')}, {loc.get('country')}\n"
-            f"- Weather: {wx.get('temp_c')}°C, {wx.get('condition')}, rain {wx.get('rain_probability_2h', 0)}%\n"
-        )
+        user_tz_str = world_state.get("temporal", {}).get("timezone", "UTC") or "UTC"
+    try:
+        user_tz = ZoneInfo(user_tz_str)
+        now_local = datetime.now(user_tz)
+    except Exception:
+        now_local = now_utc
+
+    today_str = now_local.strftime("%A, %B %d, %Y")
+    time_str = now_local.strftime("%H:%M")
+    tomorrow_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Pre-compute next occurrence of each weekday (always future)
+    def next_weekday_date(target_weekday: int) -> str:
+        days_ahead = (target_weekday - now_local.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return (now_local + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    next_days = {
+        "Monday":    next_weekday_date(0),
+        "Tuesday":   next_weekday_date(1),
+        "Wednesday": next_weekday_date(2),
+        "Thursday":  next_weekday_date(3),
+        "Friday":    next_weekday_date(4),
+        "Saturday":  next_weekday_date(5),
+        "Sunday":    next_weekday_date(6),
+    }
+
+    if world_state:
+        temporal = world_state.get("temporal", {})
+        location = world_state.get("location", {})
+        weather  = world_state.get("environment", {}).get("weather", {})
+
+        time_of_day = temporal.get("time_of_day", "")
+        district    = location.get("district", "")
+        city        = location.get("city", "")
+        state       = location.get("state", "")
+        country     = location.get("country", "")
+        location_str = ", ".join(filter(None, [district, city, state, country]))
+
+        temp_c         = weather.get("temp_c")
+        feels_like     = weather.get("feels_like_c")
+        condition      = weather.get("condition", "")
+        description    = weather.get("description", "") or condition
+        rain_1h        = weather.get("forecast_1h_rain_prob", 0) or 0
+        precip_mm      = weather.get("precipitation_mm", 0) or 0
+        is_raining     = precip_mm > 0.1
+        tomorrow_rain  = weather.get("tomorrow_rain_prob", 0) or 0
+        tomorrow_cond  = weather.get("tomorrow_condition", "")
+        uv             = weather.get("uv_index", 0)
+        humidity       = weather.get("humidity_pct", 0)
+        wind           = weather.get("wind_speed_kmh", 0)
+
+        if is_raining:
+            rain_status = f"Raining now ({precip_mm}mm). {int(rain_1h * 100)}% chance next hour."
+        elif rain_1h > 0.5:
+            rain_status = f"No rain now but {int(rain_1h * 100)}% chance in the next hour."
+        else:
+            rain_status = f"No rain. {int(rain_1h * 100)}% chance next hour."
+
+        world_context = f"""=== CURRENT DATE & TIME (USE THESE EXACT VALUES) ===
+Today is: {today_str}
+Current time: {time_str} ({user_tz_str})
+Time of day: {time_of_day}
+Today ISO: {now_local.strftime("%Y-%m-%d")}
+Tomorrow ISO: {tomorrow_str}
+
+Next weekdays:
+- Next Monday: {next_days['Monday']}
+- Next Tuesday: {next_days['Tuesday']}
+- Next Wednesday: {next_days['Wednesday']}
+- Next Thursday: {next_days['Thursday']}
+- Next Friday: {next_days['Friday']}
+- Next Saturday: {next_days['Saturday']}
+- Next Sunday: {next_days['Sunday']}
+
+IMPORTANT: Always use ISO dates above for reminders. Never calculate dates yourself.
+
+=== CURRENT LOCATION ===
+Neighbourhood: {district}
+City: {city}
+State: {state}
+Country: {country}
+Full location: {location_str}
+
+=== CURRENT WEATHER ===
+Temperature: {temp_c}°C (feels like {feels_like}°C)
+Condition: {description}
+Rain: {rain_status}
+Tomorrow: {tomorrow_cond}, rain probability {int(tomorrow_rain * 100)}%
+Humidity: {humidity}%
+Wind: {wind} km/h
+UV index: {uv}
+"""
     else:
-        world_context = "WORLD STATE: not available yet (user may not have granted location).\n"
+        world_context = f"""=== CURRENT DATE & TIME ===
+Today is: {today_str}
+Current time: {time_str}
+Today ISO: {now_local.strftime("%Y-%m-%d")}
+Tomorrow ISO: {tomorrow_str}
+
+Next weekdays:
+- Next Monday: {next_days['Monday']}
+- Next Tuesday: {next_days['Tuesday']}
+- Next Wednesday: {next_days['Wednesday']}
+- Next Thursday: {next_days['Thursday']}
+- Next Friday: {next_days['Friday']}
+
+World state not available yet — user needs to grant location permission.
+"""
 
     system_prompt = (
         f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"

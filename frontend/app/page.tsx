@@ -5,11 +5,10 @@ import { useRouter } from 'next/navigation'
 import { NudgePanel } from '@/components/NudgePanel'
 import { VoiceMode } from '@/components/VoiceMode'
 import { TimerWidget } from '@/components/TimerWidget'
-import { api } from '@/lib/api'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
 import type { Nudge, WorldState } from '@/types'
-import { Send, Mic, Bell } from 'lucide-react'
+import { Send, Mic, Bell, X } from 'lucide-react'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -24,6 +23,7 @@ export default function HomePage() {
   const [nudges, setNudges] = useState<Nudge[]>([])
   const [worldState, setWorldState] = useState<WorldState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
+  const [isVoiceMode, setIsVoiceMode] = useState(false)
   const [userToken, setUserToken] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -32,29 +32,19 @@ export default function HomePage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        router.push('/login')
-      } else {
-        setUserToken(session.access_token)
-      }
+      if (!session) router.push('/login')
+      else setUserToken(session.access_token)
     })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!session) {
-        router.push('/login')
-      } else {
-        setUserToken(session.access_token)
-      }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
+      if (!session) router.push('/login')
+      else setUserToken(session.access_token)
     })
-
     return () => subscription.unsubscribe()
   }, [router])
 
   const refreshNudges = useCallback(async (token: string) => {
     try {
-      const res = await fetch(`${JARVIS_URL}/nudges`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
+      const res = await fetch(`${JARVIS_URL}/nudges`, { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setNudges(await res.json())
     } catch (_) {}
   }, [])
@@ -62,21 +52,13 @@ export default function HomePage() {
   const refreshContext = useCallback(async (token: string) => {
     try {
       const sensors = await collectSensors()
-      console.log('[sensors]', sensors)
-      console.log('[context] posting with token:', !!token)
       const res = await fetch(`${JARVIS_URL}/context/update`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(sensors),
       })
-      console.log('[context] response status:', res.status)
       if (res.ok) {
-        const stateRes = await fetch(`${JARVIS_URL}/world-state`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${token}` } })
         if (stateRes.ok) setWorldState(await stateRes.json())
       }
       await refreshNudges(token)
@@ -85,7 +67,6 @@ export default function HomePage() {
     }
   }, [refreshNudges])
 
-  // Only run context refresh AFTER token is available
   useEffect(() => {
     if (!userToken) return
     refreshContext(userToken)
@@ -98,29 +79,22 @@ export default function HomePage() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const payload = { lat: pos.coords.latitude, lng: pos.coords.longitude, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
-        console.log('[sync] got coords:', payload)
         const res = await fetch(`${JARVIS_URL}/context/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
           body: JSON.stringify(payload),
         })
-        console.log('[sync] response:', res.status)
         if (res.ok) {
           const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${userToken}` } })
           if (stateRes.ok) setWorldState(await stateRes.json())
-          alert('Location synced!')
-        } else {
-          alert(`Sync failed: ${res.status}`)
         }
       },
-      (err) => {
-        console.error('[sync] geolocation error:', err)
-        alert(`Location denied: ${err.message}. Sending Lagos default.`)
+      () => {
         fetch(`${JARVIS_URL}/context/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
           body: JSON.stringify({ lat: 6.5244, lng: 3.3792, timezone: 'Africa/Lagos' }),
-        }).then(r => console.log('[sync] fallback response:', r.status))
+        })
       }
     )
   }, [userToken])
@@ -128,6 +102,39 @@ export default function HomePage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Fix 1: reliable speakText — only fires after stream ends, voices loaded
+  const speakText = useCallback((text: string) => {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const clean = text
+      .replace(/\[TIMER:[^\]]+\]/g, '')
+      .replace(/\*\*/g, '')
+      .replace(/\*/g, '')
+      .replace(/#{1,6}\s/g, '')
+      .trim()
+    if (!clean) return
+
+    const speak = () => {
+      const utterance = new SpeechSynthesisUtterance(clean)
+      utterance.rate = 1.05
+      utterance.pitch = 1.0
+      utterance.volume = 1.0
+      const voices = window.speechSynthesis.getVoices()
+      const preferred = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
+        || voices.find(v => v.lang.startsWith('en') && !v.localService)
+        || voices.find(v => v.lang.startsWith('en'))
+      if (preferred) utterance.voice = preferred
+      utterance.onerror = (e) => console.log('Speech error:', e)
+      window.speechSynthesis.speak(utterance)
+    }
+
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = speak
+    } else {
+      speak()
+    }
+  }, [])
 
   const handleTimerFromResponse = useCallback((response: string) => {
     const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
@@ -138,26 +145,21 @@ export default function HomePage() {
     }
   }, [])
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || streaming || !userToken) return
+  const sendMessage = useCallback(async (overrideInput?: string) => {
+    const text = (overrideInput ?? input).trim()
+    if (!text || streaming || !userToken) return
 
-    const userMsg: Message = { role: 'user', content: input.trim() }
+    const userMsg: Message = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setStreaming(true)
 
-    const allMessages = [...messages, userMsg].map(m => ({
-      role: m.role,
-      content: m.content,
-    }))
+    const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }))
 
     try {
       const res = await fetch(`${JARVIS_URL}/agent`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${userToken}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
         body: JSON.stringify({ messages: allMessages }),
       })
 
@@ -172,10 +174,7 @@ export default function HomePage() {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n')
-        for (const line of lines) {
+        for (const line of decoder.decode(value).split('\n')) {
           if (line.startsWith('data: ') && line !== 'data: [DONE]') {
             try {
               const data = JSON.parse(line.slice(6))
@@ -191,7 +190,8 @@ export default function HomePage() {
           }
         }
       }
-      // Handle timer marker, strip it from displayed message
+
+      // After stream ends — handle timer + speech
       if (assistantContent) {
         handleTimerFromResponse(assistantContent)
         const cleaned = assistantContent.replace(/\s*\[TIMER:[^\]]+\]/g, '').trim()
@@ -202,13 +202,17 @@ export default function HomePage() {
             return updated
           })
         }
+        // Fix 1: only speak if triggered via voice
+        if (isVoiceMode) {
+          speakText(cleaned || assistantContent)
+        }
       }
-    } catch (err) {
+    } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again.' }])
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, userToken, messages, handleTimerFromResponse])
+  }, [input, streaming, userToken, messages, handleTimerFromResponse, speakText, isVoiceMode])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -223,142 +227,152 @@ export default function HomePage() {
 
   const weather = worldState?.environment?.weather
   const location = worldState?.location
+  const temporal = worldState?.temporal
 
   return (
-    <div className="flex h-dvh bg-jarvis-bg text-jarvis-text overflow-hidden">
-      {/* Main chat area */}
-      <div className="flex flex-col flex-1 min-w-0">
-        {/* Header — compact on mobile */}
-        <header className="flex items-center justify-between px-3 py-2 md:px-4 md:py-3 border-b border-jarvis-border bg-jarvis-surface shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-base md:text-lg font-semibold tracking-tight">JARVIS</span>
-            <span className="text-xs text-jarvis-muted hidden sm:inline">v3</span>
-          </div>
-          <div className="flex items-center gap-1.5 md:gap-3 text-xs text-jarvis-muted">
-            {/* Weather/location — hidden on very small screens */}
-            {location?.city && (
-              <span className="hidden xs:inline truncate max-w-[80px] md:max-w-none">{location.city}</span>
-            )}
-            {weather?.temp_c != null && (
-              <span className="hidden sm:inline">{Math.round(weather.temp_c)}°C</span>
-            )}
-            <button
-              onClick={syncLocation}
-              className="px-1.5 py-1 md:px-2 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors text-xs"
-              title="Sync location"
-            >
-              ⌖
-            </button>
-            <button
-              onClick={() => setPanelOpen(!panelOpen)}
-              className="relative p-1.5 md:px-2 md:py-1 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors"
-              title="Nudges"
-            >
-              <Bell size={16} className="md:hidden" />
-              <span className="hidden md:inline">Nudges</span>
-              {nudges.length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center leading-none">
-                  {nudges.length}
-                </span>
-              )}
-            </button>
-          </div>
-        </header>
+    <div className="flex flex-col h-dvh w-full bg-jarvis-bg text-jarvis-text overflow-hidden">
 
-        {/* Chat or Voice — fills remaining height */}
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {voiceActive && userToken ? (
-            <div className="flex flex-col items-center justify-center h-full gap-6">
-              <p className="text-jarvis-muted text-sm">Voice mode active</p>
-              <VoiceMode
-                worldStateContext={worldContext}
-                userToken={userToken}
-                onTranscript={(text, role) => {
-                  setMessages(prev => [...prev, { role, content: text }])
-                }}
-              />
-              <button
-                onClick={() => setVoiceActive(false)}
-                className="text-xs text-jarvis-muted hover:text-jarvis-text transition-colors mt-4"
-              >
-                Switch to text
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-3 md:px-4 py-4 space-y-3 pb-2">
-                {messages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-4">
-                    <p className="text-xl md:text-2xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
-                    <p className="text-jarvis-muted text-sm">What's on your mind?</p>
-                  </div>
-                )}
-                {messages.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] md:max-w-[75%] rounded-2xl px-3 md:px-4 py-2 md:py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-                      msg.role === 'user'
-                        ? 'bg-jarvis-accent text-white rounded-br-sm'
-                        : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
-                    }`}>
-                      {msg.content || (streaming && i === messages.length - 1 ? '▋' : '')}
-                    </div>
-                  </div>
-                ))}
-                <div ref={messagesEndRef} />
-              </div>
+      {/* Header */}
+      <header className="flex items-center justify-between px-3 py-2 border-b border-jarvis-border bg-jarvis-surface shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-base font-semibold tracking-tight">JARVIS</span>
+          <span className="text-xs text-jarvis-muted hidden sm:inline">v3</span>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-jarvis-muted">
+          <button
+            onClick={syncLocation}
+            className="px-1.5 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors"
+            title="Sync location"
+          >
+            ⌖ Sync
+          </button>
+          <button
+            onClick={() => setPanelOpen(!panelOpen)}
+            className="relative p-1.5 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors"
+            title="Nudges"
+          >
+            <Bell size={16} />
+            {nudges.length > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                {nudges.length}
+              </span>
+            )}
+          </button>
+        </div>
+      </header>
 
-              {/* Input — fixed to bottom on mobile */}
-              <div className="shrink-0 px-3 md:px-4 py-2 md:py-3 border-t border-jarvis-border bg-jarvis-surface">
-                <div className="flex items-end gap-1.5 md:gap-2">
-                  <textarea
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Message JARVIS..."
-                    rows={1}
-                    className="flex-1 resize-none bg-jarvis-bg border border-jarvis-border rounded-xl px-3 md:px-4 py-2 md:py-2.5 text-sm text-jarvis-text placeholder:text-jarvis-muted focus:outline-none focus:border-jarvis-accent transition-colors"
-                    style={{ maxHeight: '100px' }}
-                  />
-                  {userToken && (
-                    <button
-                      onClick={() => setVoiceActive(true)}
-                      className="p-2 md:p-2.5 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent shrink-0"
-                      title="Voice mode"
-                    >
-                      <Mic size={18} />
-                    </button>
-                  )}
-                  <button
-                    onClick={sendMessage}
-                    disabled={!input.trim() || streaming || !userToken}
-                    className="p-2 md:p-2.5 rounded-xl bg-jarvis-accent hover:bg-jarvis-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-white shrink-0"
-                  >
-                    <Send size={18} />
-                  </button>
-                </div>
-                {!userToken && (
-                  <p className="text-xs text-jarvis-muted mt-1 text-center">
-                    <a href="/login" className="text-jarvis-accent hover:underline">Sign in</a> to chat with JARVIS
-                  </p>
-                )}
-              </div>
-            </>
+      {/* Status bar — always visible below header */}
+      {worldState && (
+        <div className="flex items-center gap-2 text-xs text-gray-400 px-3 py-1.5 bg-gray-900/50 border-b border-white/5 shrink-0 overflow-x-auto whitespace-nowrap">
+          <span>📍 {location?.district ? `${location.district}, ${location.city}` : location?.city}</span>
+          {weather?.temp_c != null && <><span className="text-gray-600">·</span><span>🌡 {Math.round(weather.temp_c)}°C</span></>}
+          {(weather?.description || weather?.condition) && (
+            <><span className="text-gray-600">·</span><span>{weather.description || weather.condition}</span></>
+          )}
+          {(weather?.precipitation_mm ?? 0) > 0.1 && (
+            <span className="text-blue-400">· 🌧 Raining</span>
           )}
         </div>
+      )}
+
+      {/* Chat or Voice */}
+      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+        {voiceActive && userToken ? (
+          <div className="flex flex-col items-center justify-center h-full gap-6 px-4">
+            <p className="text-jarvis-muted text-sm">Voice mode active</p>
+            <VoiceMode
+              worldStateContext={worldContext}
+              userToken={userToken}
+              onTranscript={(text, role) => {
+                // VoiceMode handles its own agent call + speech internally.
+                // onTranscript here is display-only — append to chat log.
+                setMessages(prev => [...prev, { role, content: text }])
+              }}
+            />
+            <button
+              onClick={() => { setVoiceActive(false); setIsVoiceMode(false); window.speechSynthesis?.cancel() }}
+              className="text-xs text-jarvis-muted hover:text-jarvis-text transition-colors"
+            >
+              Switch to text
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
+              {messages.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-4">
+                  <p className="text-xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
+                  <p className="text-jarvis-muted text-sm">What's on your mind?</p>
+                </div>
+              )}
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                    msg.role === 'user'
+                      ? 'bg-jarvis-accent text-white rounded-br-sm'
+                      : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
+                  }`}>
+                    {msg.content || (streaming && i === messages.length - 1 ? '▋' : '')}
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="shrink-0 px-3 py-2 border-t border-jarvis-border bg-jarvis-surface">
+              <div className="flex items-end gap-1.5">
+                <textarea
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Message JARVIS..."
+                  rows={1}
+                  className="flex-1 min-w-0 resize-none bg-jarvis-bg border border-jarvis-border rounded-xl px-3 py-2 text-sm text-jarvis-text placeholder:text-jarvis-muted focus:outline-none focus:border-jarvis-accent transition-colors"
+                  style={{ maxHeight: '100px' }}
+                />
+                {userToken && (
+                  <button
+                    onClick={() => { setIsVoiceMode(true); setVoiceActive(true) }}
+                    className="p-2 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent shrink-0"
+                    title="Voice mode"
+                  >
+                    <Mic size={18} />
+                  </button>
+                )}
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!input.trim() || streaming || !userToken}
+                  className="p-2 rounded-xl bg-jarvis-accent hover:bg-jarvis-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-white shrink-0"
+                >
+                  <Send size={18} />
+                </button>
+              </div>
+              {!userToken && (
+                <p className="text-xs text-jarvis-muted mt-1 text-center">
+                  <a href="/login" className="text-jarvis-accent hover:underline">Sign in</a> to chat
+                </p>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <TimerWidget />
 
       {/* Nudge panel */}
       {panelOpen && userToken && (
-        <NudgePanel
-          token={userToken}
-          onClose={() => setPanelOpen(false)}
-          onPersonClick={(personId) => {
-            window.location.href = `/people/${personId}`
-          }}
-        />
+        <div className="fixed inset-0 z-50 md:relative md:inset-auto md:w-80">
+          <div className="absolute inset-0 bg-black/60 md:hidden" onClick={() => setPanelOpen(false)} />
+          <div className="absolute right-0 top-0 bottom-0 w-80 md:relative md:w-full">
+            <NudgePanel
+              token={userToken}
+              onClose={() => setPanelOpen(false)}
+              onPersonClick={(personId) => { window.location.href = `/people/${personId}` }}
+            />
+          </div>
+        </div>
       )}
     </div>
   )

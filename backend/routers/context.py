@@ -23,48 +23,6 @@ class SensorPayload(BaseModel):
     behavioral: Optional[dict] = {}
 
 
-async def enrich_location(lat: float, lng: float) -> dict:
-    """Reverse geocode using Nominatim (OpenStreetMap) — completely free."""
-    if not lat or not lng:
-        return {"city": "Unknown", "area": "Unknown", "formatted": ""}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(
-                "https://nominatim.openstreetmap.org/reverse",
-                params={
-                    "lat": lat,
-                    "lon": lng,
-                    "format": "json",
-                    "addressdetails": 1,
-                },
-                headers={"User-Agent": "JARVIS-v3/1.0 (personal assistant)"},
-                timeout=5.0,
-            )
-            data = r.json()
-            address = data.get("address", {})
-            city = (
-                address.get("city")
-                or address.get("town")
-                or address.get("village")
-                or address.get("state", "Unknown")
-            )
-            area = (
-                address.get("suburb")
-                or address.get("neighbourhood")
-                or address.get("county", "")
-            )
-            return {
-                "formatted": data.get("display_name", ""),
-                "city": city,
-                "area": area,
-                "country": address.get("country", ""),
-            }
-        except Exception as e:
-            print(f"Nominatim error: {e}")
-            return {"city": "Unknown", "area": "Unknown", "formatted": ""}
-
-
 @router.post("/update")
 async def update_context(
     payload: SensorPayload,
@@ -87,20 +45,6 @@ async def update_context(
 
     behavioral = payload.behavioral or {}
     behavioral["timezone"] = payload.timezone or os.getenv("DEFAULT_TIMEZONE", "Africa/Lagos")
-
-    # Only re-geocode if coordinates changed significantly (respects Nominatim 1 req/s limit)
-    last_state = await cache_get(user_id)
-    last_lat = last_state.get("location", {}).get("lat") if last_state else None
-    last_lng = last_state.get("location", {}).get("lng") if last_state else None
-
-    if (
-        last_lat and last_lng and lat and lng
-        and abs(lat - last_lat) < 0.01
-        and abs(lng - last_lng) < 0.01
-    ):
-        location = last_state.get("location", {})
-    else:
-        location = await enrich_location(lat, lng)
 
     # Fetch active goals from DB
     db = get_supabase()
@@ -134,11 +78,6 @@ async def update_context(
 
     world_state["user_id"] = user_id
     world_state["upcoming_relationship_events"] = upcoming_events
-    # Merge enriched location into world state
-    if location:
-        world_state.setdefault("location", {}).update(location)
-        world_state["location"]["lat"] = lat
-        world_state["location"]["lng"] = lng
 
     await cache_set(user_id, world_state)
 

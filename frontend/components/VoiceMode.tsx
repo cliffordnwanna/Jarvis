@@ -174,11 +174,35 @@ function SpeechAPIVoice({ userToken, onTranscript }: { userToken: string; onTran
   const recognitionRef = useRef<any>(null)
 
   const speak = useCallback((text: string) => {
-    setIsSpeaking(true)
-    const utt = new SpeechSynthesisUtterance(text)
-    utt.rate = 1.05
-    utt.onend = () => setIsSpeaking(false)
-    window.speechSynthesis.speak(utt)
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const clean = text
+      .replace(/\[TIMER:[^\]]+\]/g, '')
+      .replace(/\*\*/g, '').replace(/\*/g, '')
+      .replace(/#{1,6}\s/g, '').trim()
+    if (!clean) return
+
+    const doSpeak = () => {
+      setIsSpeaking(true)
+      const utt = new SpeechSynthesisUtterance(clean)
+      utt.rate = 1.05
+      utt.pitch = 1.0
+      utt.volume = 1.0
+      const voices = window.speechSynthesis.getVoices()
+      const preferred = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
+        || voices.find(v => v.lang.startsWith('en') && !v.localService)
+        || voices.find(v => v.lang.startsWith('en'))
+      if (preferred) utt.voice = preferred
+      utt.onend = () => setIsSpeaking(false)
+      utt.onerror = (e) => { console.log('Speech error:', e); setIsSpeaking(false) }
+      window.speechSynthesis.speak(utt)
+    }
+
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = doSpeak
+    } else {
+      doSpeak()
+    }
   }, [])
 
   const sendToAgent = useCallback(async (transcript: string) => {

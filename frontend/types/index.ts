@@ -75,10 +75,13 @@ export interface WorldState {
     timezone: string
     day_of_week: string
     time_of_day: string
-    is_weekend: boolean
     hour_decimal: number
+    is_weekend: boolean
+    is_public_holiday: boolean
     sunrise?: string
     sunset?: string
+    moon_phase?: string
+    minutes_until_midnight?: number
   }
   location?: {
     lat?: number
@@ -87,6 +90,7 @@ export interface WorldState {
     state?: string
     district?: string
     country?: string
+    country_code?: string
     location_type?: string
   }
   environment?: {
@@ -97,12 +101,23 @@ export interface WorldState {
       feels_like_c?: number
       humidity_pct?: number
       wind_speed_kmh?: number
+      wind_direction?: string
+      cloud_cover_pct?: number
+      uv_index?: number
+      precipitation_mm?: number
+      is_day?: boolean
       forecast_1h_rain_prob?: number
       forecast_3h_rain_prob?: number
+      tomorrow_max_c?: number
+      tomorrow_min_c?: number
+      tomorrow_rain_prob?: number
+      tomorrow_condition?: string
     }
     air_quality?: {
       aqi?: number
       category?: string
+      pm25?: number
+      pm10?: number
     }
   }
   device?: {
