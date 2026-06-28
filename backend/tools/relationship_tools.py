@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from openai import AsyncOpenAI
 from langchain_core.tools import tool
@@ -129,6 +130,102 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
     except Exception as e:
         print(f"Hybrid search error: {e}")
         return []
+
+
+@tool
+async def add_person(
+    user_id: str,
+    name: str,
+    relationship_type: str = "friend",
+    notes: str = None,
+    birthday: str = None,
+    job: str = None,
+) -> dict:
+    """
+    Add a new person to the user's relationship network.
+    Use when the user says 'add X to my people', 'remember my friend X', 'I have a colleague named X', etc.
+    Args:
+        user_id: authenticated user UUID
+        name: person's full name
+        relationship_type: one of friend, family, colleague, mentor, acquaintance
+        notes: any details about them (job, personality, context)
+        birthday: ISO date string YYYY-MM-DD if mentioned
+        job: their job title or profession if mentioned
+    """
+    db = get_supabase()
+    try:
+        person_data = {
+            "user_id": user_id,
+            "name": name,
+            "relationship_type": relationship_type,
+            "circle": "inner" if relationship_type in ["family", "friend"] else "community",
+            "tags": [job] if job else [],
+        }
+        if birthday:
+            person_data["birthday"] = birthday
+
+        res = db.table("people").insert(person_data).execute()
+        if not res.data:
+            return {"status": "error", "detail": "Insert returned no data"}
+
+        person = res.data[0]
+        person_id = person["id"]
+
+        if notes or job:
+            note_content = notes or f"{name} works as {job}."
+            embedding = await embed_text(note_content)
+            note_row = {
+                "user_id": user_id,
+                "person_id": person_id,
+                "content": note_content,
+                "source": "agent",
+            }
+            if embedding:
+                note_row["embedding"] = embedding
+            db.table("relationship_notes").insert(note_row).execute()
+
+        print(f"[add_person] Added {name} (id={person_id})")
+        return {"status": "added", "person_id": person_id, "name": name}
+    except Exception as e:
+        print(f"[add_person] error: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@tool
+async def add_note_for_person(
+    user_id: str,
+    person_name: str,
+    note: str,
+) -> dict:
+    """
+    Add a note or detail about someone already in the user's people.
+    Use when the user says 'note that Vincent likes chess', 'remember that Sarah got promoted', etc.
+    Args:
+        user_id: authenticated user UUID
+        person_name: name of the person (will be looked up)
+        note: the detail to remember
+    """
+    db = get_supabase()
+    try:
+        res = db.table("people").select("id, name").eq("user_id", user_id).ilike("name", f"%{person_name}%").limit(1).execute()
+        if not res.data:
+            return {"status": "error", "detail": f"No person named '{person_name}' found. Add them first."}
+
+        person = res.data[0]
+        embedding = await embed_text(note)
+        note_row = {
+            "user_id": user_id,
+            "person_id": person["id"],
+            "content": note,
+            "source": "agent",
+        }
+        if embedding:
+            note_row["embedding"] = embedding
+        db.table("relationship_notes").insert(note_row).execute()
+        return {"status": "noted", "person": person["name"], "note": note}
+    except Exception as e:
+        print(f"[add_note_for_person] error: {e}")
+        return {"status": "error", "detail": str(e)}
 
 
 @tool

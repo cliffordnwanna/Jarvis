@@ -4,7 +4,7 @@ from langchain_openai import ChatOpenAI
 from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta
 from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search
-from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder
+from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
 
 BASE_SYSTEM_PROMPT = """You are JARVIS — a proactive personal AI. Not a chatbot. A cognitive runtime.
 
@@ -40,6 +40,8 @@ Speak like someone who genuinely knows the user and cares about their life going
 - get_goals / manage_goal: goal tracking
 - send_nudge: send proactive alerts
 - web_search: look up current information
+- add_person: add a new person to the user's relationship network. Use when user says 'add X', 'remember my friend X', 'I have a colleague named X'.
+- add_note_for_person: save a detail about someone already in the network. Use when user shares new info about a person.
 - hybrid_search_notes: search what you know about a person from relationship memory (semantic + keyword)
 - get_nearby_places: find restaurants, pharmacies, ATMs, fuel stations nearby (uses OpenStreetMap)
 - get_travel_eta: get driving/walking/cycling time between two points (uses OSRM)
@@ -77,6 +79,8 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
         manage_goal,
         web_search,
         hybrid_search_notes_tool,
+        add_person,
+        add_note_for_person,
         get_nearby_places,
         get_travel_eta,
         create_reminder,
