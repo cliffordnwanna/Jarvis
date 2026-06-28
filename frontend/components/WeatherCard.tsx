@@ -1,6 +1,4 @@
-import { Cloud, CloudRain, Droplets, Sun, Wind } from "lucide-react"
-
-interface WeatherCardProps {
+interface Props {
   condition: string
   temp_c: number
   feels_like_c: number
@@ -9,43 +7,34 @@ interface WeatherCardProps {
   city: string
 }
 
-export function WeatherCard(props: WeatherCardProps) {
-  const icon = (() => {
-    const c = props.condition.toLowerCase()
-    if (c.includes("rain")) return <CloudRain className="w-10 h-10 text-sky-300" />
-    if (c.includes("cloud")) return <Cloud className="w-10 h-10 text-slate-300" />
-    return <Sun className="w-10 h-10 text-amber-300" />
-  })()
-
+export default function WeatherCard({ condition, temp_c, feels_like_c, humidity_pct, rain_prob_1h, city }: Props) {
   return (
-    <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-white truncate">{props.city}</h3>
-          <p className="text-xs text-white/50 truncate">{props.condition}</p>
-        </div>
-        <div className="opacity-90">{icon}</div>
+    <div className="rounded-xl border border-jarvis-border bg-jarvis-surface p-4 w-72">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-jarvis-muted uppercase tracking-widest">Weather</span>
+        <span className="text-xs text-jarvis-muted">{city}</span>
       </div>
-
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div>
-          <p className="text-2xl font-semibold text-white">{Math.round(props.temp_c)}°C</p>
-          <p className="text-xs text-white/50">Feels like {Math.round(props.feels_like_c)}°C</p>
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <Droplets className="w-4 h-4 text-white/50" />
-            <span className="text-sm text-white/80">{props.humidity_pct}% humidity</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Wind className="w-4 h-4 text-white/50" />
-            <span className="text-sm text-white/80">{props.rain_prob_1h}% rain (1h)</span>
-          </div>
-        </div>
+      <div className="flex items-end gap-3 mb-3">
+        <span className="text-4xl font-light">{Math.round(temp_c)}°</span>
+        <span className="text-sm text-jarvis-muted mb-1 capitalize">{condition?.replace('_', ' ')}</span>
       </div>
-
-      <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
-        <div className="bg-sky-400 h-full transition-all" style={{ width: `${props.rain_prob_1h}%` }} />
+      <div className="space-y-1.5 text-xs text-jarvis-muted">
+        <div className="flex justify-between">
+          <span>Feels like</span>
+          <span className="text-jarvis-text">{Math.round(feels_like_c)}°C</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Humidity</span>
+          <span className="text-jarvis-text">{humidity_pct}%</span>
+        </div>
+        {rain_prob_1h > 0 && (
+          <div className="flex justify-between">
+            <span>Rain next hour</span>
+            <span className={rain_prob_1h > 0.6 ? 'text-yellow-400' : 'text-jarvis-text'}>
+              {Math.round(rain_prob_1h * 100)}%
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )

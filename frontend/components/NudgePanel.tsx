@@ -1,164 +1,148 @@
-"use client"
-import {
-  CalendarDays,
-  Car,
-  Check,
-  Cloud,
-  Lightbulb,
-  Target,
-  Trash2,
-  UtensilsCrossed,
-  X,
-} from "lucide-react"
-import { useState } from "react"
+'use client'
 
-interface Nudge {
-  id: string
-  type: string
-  message: string
-  card_data: Record<string, unknown>
-  priority: string
-}
-
-interface Goal {
-  id: string
-  name: string
-  status: string
-  urgency: string
-  last_touched: string
-}
+import { useEffect, useState, useCallback } from 'react'
+import { X, CloudRain, Calendar, Target, Users, Gift, Bell } from 'lucide-react'
+import { MorningBriefCard } from './MorningBriefCard'
+import type { Nudge } from '@/types'
 
 interface NudgePanelProps {
-  nudges: Nudge[]
-  goals: Goal[]
-  onClose: () => void
-  onGoalUpdate: (goals: Goal[]) => void
-  onDismissNudge: (id: string) => void
+  token: string
+  onPersonClick?: (personId: string) => void
+  onGoalTouch?: (message: string) => void
+  onClose?: () => void
+  // Legacy props from original page.tsx wiring
+  nudges?: Nudge[]
+  onDismiss?: (id: string) => void
 }
 
-function NudgeTypeIcon(props: { type: string }) {
-  const key = props.type.toLowerCase()
-  if (key === "weather") return <Cloud className="h-4 w-4 text-sky-200" />
-  if (key === "food") return <UtensilsCrossed className="h-4 w-4 text-amber-200" />
-  if (key === "traffic") return <Car className="h-4 w-4 text-emerald-200" />
-  if (key === "goal") return <Target className="h-4 w-4 text-violet-200" />
-  if (key === "calendar") return <CalendarDays className="h-4 w-4 text-indigo-200" />
-  return <Lightbulb className="h-4 w-4 text-yellow-200" />
+const NUDGE_ICONS: Record<string, React.ReactNode> = {
+  weather: <CloudRain size={14} className="text-blue-400" />,
+  calendar: <Calendar size={14} className="text-purple-400" />,
+  goal: <Target size={14} className="text-blue-400" />,
+  relationship_birthday: <Gift size={14} className="text-pink-400" />,
+  relationship_cooling: <Users size={14} className="text-orange-400" />,
+  relationship_followup: <Users size={14} className="text-green-400" />,
 }
 
-function priorityStyle(priority: string) {
-  if (priority === "high") return "border-l-red-400 bg-red-950/20"
-  if (priority === "medium") return "border-l-amber-400 bg-amber-950/20"
-  return "border-l-gray-400 bg-gray-950/20"
+const PRIORITY_ORDER = ['high', 'medium', 'low']
+
+const PRIORITY_BORDER: Record<string, string> = {
+  high: 'border-red-500/30',
+  medium: 'border-yellow-500/20',
+  low: 'border-white/5',
 }
 
-export function NudgePanel(props: NudgePanelProps) {
-  const [editingGoals, setEditingGoals] = useState(props.goals)
+export function NudgePanel({ token, onPersonClick, onGoalTouch, onClose }: NudgePanelProps) {
+  const [nudges, setNudges] = useState<Nudge[]>([])
+  const [dismissing, setDismissing] = useState<Set<string>>(new Set())
 
-  const handleGoalToggle = (id: string) => {
-    const updated = editingGoals.map((g) =>
-      g.id === id ? { ...g, status: g.status === "active" ? "done" : "active" } : g,
-    )
-    setEditingGoals(updated)
-    props.onGoalUpdate(updated)
-  }
+  const fetchNudges = useCallback(async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_JARVIS_URL}/nudges`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return
+      const data: Nudge[] = await res.json()
+      const sorted = data.sort((a, b) => {
+        const pa = PRIORITY_ORDER.indexOf(a.priority)
+        const pb = PRIORITY_ORDER.indexOf(b.priority)
+        if (pa !== pb) return pa - pb
+        return new Date(b.delivered_at).getTime() - new Date(a.delivered_at).getTime()
+      })
+      setNudges(sorted.slice(0, 8))
+    } catch {}
+  }, [token])
 
-  const handleGoalDelete = (id: string) => {
-    const updated = editingGoals.filter((g) => g.id !== id)
-    setEditingGoals(updated)
-    props.onGoalUpdate(updated)
-  }
+  useEffect(() => {
+    fetchNudges()
+    const interval = setInterval(fetchNudges, 60_000)
+    return () => clearInterval(interval)
+  }, [fetchNudges])
+
+  const dismiss = useCallback(async (id: string) => {
+    setDismissing(prev => new Set(prev).add(id))
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_JARVIS_URL}/nudges/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      setNudges(prev => prev.filter(n => n.id !== id))
+    } catch {}
+    setDismissing(prev => { const s = new Set(prev); s.delete(id); return s })
+  }, [token])
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-[360px] border-l border-white/10 bg-[#0b1220] flex flex-col">
-      <div className="flex items-center justify-between px-4 py-4 border-b border-white/10">
-        <h2 className="text-sm font-semibold text-white">Nudges</h2>
-        <button onClick={props.onClose} className="p-2 hover:bg-white/5 rounded-md transition-colors">
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        {props.nudges.length > 0 && (
-          <div className="p-3 border-b border-white/5">
-            <p className="text-[11px] font-semibold text-white/40 mb-2 tracking-wide">PENDING</p>
-            <div className="space-y-2">
-              {props.nudges.map((nudge) => (
-                <div
-                  key={nudge.id}
-                  className={`border-l-2 rounded-xl p-3 flex items-start justify-between ${priorityStyle(nudge.priority)}`}
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white/5 border border-white/10">
-                        <NudgeTypeIcon type={nudge.type} />
-                      </span>
-                      <p className="text-sm font-medium text-white leading-snug">{nudge.message}</p>
-                    </div>
-                    <p className="text-xs text-white/40 capitalize">{nudge.type}</p>
-                  </div>
-                  <button
-                    onClick={() => props.onDismissNudge(nudge.id)}
-                    className="p-2 hover:bg-white/5 rounded-md transition-colors ml-2 flex-shrink-0"
-                    aria-label="Dismiss nudge"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {editingGoals.length > 0 && (
-          <div className="p-3">
-            <p className="text-[11px] font-semibold text-white/40 mb-2 tracking-wide">GOALS</p>
-            <div className="space-y-1">
-              {editingGoals.map((goal) => (
-                <div
-                  key={goal.id}
-                  className="flex items-center gap-2 p-2 hover:bg-white/5 rounded group transition-colors"
-                >
-                  <button
-                    onClick={() => handleGoalToggle(goal.id)}
-                    className={`flex-shrink-0 w-5 h-5 rounded border flex items-center justify-center transition-colors ${
-                      goal.status === "done"
-                        ? "bg-green-500/30 border-green-400"
-                        : "border-white/20 hover:border-white/40"
-                    }`}
-                    aria-label={goal.status === "done" ? "Mark active" : "Mark done"}
-                  >
-                    {goal.status === "done" && <Check className="w-3 h-3 text-green-300" />}
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className={`text-sm truncate transition-all ${
-                        goal.status === "done" ? "text-white/40 line-through" : "text-white"
-                      }`}
-                    >
-                      {goal.name}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleGoalDelete(goal.id)}
-                    className="p-2 hover:bg-red-900/20 rounded-md opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
-                    aria-label="Delete goal"
-                  >
-                    <Trash2 className="w-3 h-3 text-red-400" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {props.nudges.length === 0 && editingGoals.length === 0 && (
-          <div className="p-4 text-center text-white/40">
-            <p className="text-sm">No nudges yet.</p>
-            <p className="text-xs mt-1">JARVIS will surface them when needed.</p>
-          </div>
+    <aside className="w-80 flex flex-col h-full border-l border-jarvis-border bg-jarvis-surface">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-jarvis-border">
+        <span className="text-sm font-medium text-jarvis-text">Nudges</span>
+        {onClose && (
+          <button onClick={onClose} className="text-jarvis-muted hover:text-jarvis-text transition-colors">
+            <X size={16} />
+          </button>
         )}
       </div>
-    </div>
+
+      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+        <MorningBriefCard token={token} onPersonClick={onPersonClick} />
+
+        {nudges.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <Bell size={22} className="text-gray-700 mb-3" />
+            <p className="text-sm text-gray-600">No nudges right now.</p>
+            <p className="text-xs text-gray-700 mt-1">JARVIS will notify you when something needs attention.</p>
+          </div>
+        ) : (
+          nudges.map(nudge => (
+            <div
+              key={nudge.id}
+              className={`
+                relative rounded-xl border p-3 transition-all duration-200
+                ${PRIORITY_BORDER[nudge.priority] || 'border-white/5'}
+                ${nudge.priority === 'high' ? 'bg-red-500/5' : 'bg-white/[0.02]'}
+                ${dismissing.has(nudge.id) ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}
+              `}
+            >
+              {nudge.priority === 'high' && (
+                <div className="absolute top-2 left-2 w-1.5 h-1.5 rounded-full bg-red-500" />
+              )}
+              <button
+                onClick={() => dismiss(nudge.id)}
+                className="absolute top-2 right-2 text-gray-600 hover:text-gray-400 transition-colors"
+              >
+                <X size={12} />
+              </button>
+
+              <div className="flex items-start gap-2 pr-4 pl-1">
+                <div className="mt-0.5 flex-shrink-0">
+                  {NUDGE_ICONS[nudge.nudge_type] || <Bell size={14} className="text-gray-400" />}
+                </div>
+                <p className="text-sm text-gray-300 leading-snug">{nudge.message}</p>
+              </div>
+
+              <div className="flex gap-2 mt-2 ml-6">
+                {nudge.nudge_type.startsWith('relationship') && nudge.person_id && (
+                  <button
+                    onClick={() => onPersonClick?.(nudge.person_id!)}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    View profile →
+                  </button>
+                )}
+                {nudge.nudge_type === 'goal' && (
+                  <button
+                    onClick={() => { onGoalTouch?.(nudge.message); dismiss(nudge.id) }}
+                    className="text-xs text-green-400 hover:text-green-300 transition-colors"
+                  >
+                    Mark done today →
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </aside>
   )
 }
+
+export default NudgePanel

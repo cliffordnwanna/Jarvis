@@ -1,3 +1,6 @@
+# ── Archive (old versions — not needed in repo) ───────────────────────────────
+archive/
+
 # ── Environment & secrets ─────────────────────────────────────────────────────
 .env
 .env.*

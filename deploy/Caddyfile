@@ -1,0 +1,43 @@
+89.167.93.25.sslip.io {
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(self), geolocation=(self)"
+        -Server
+    }
+
+    # Backend API — strip /api prefix before forwarding
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy 127.0.0.1:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up Host {host}
+        }
+    }
+
+    # Frontend — everything else
+    handle {
+        reverse_proxy 127.0.0.1:3000 {
+            header_up X-Real-IP {remote_host}
+            header_up Host {host}
+        }
+    }
+
+    # Logging
+    log {
+        output file /var/log/caddy/jarvis-access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+
+# Redirect bare IP HTTP to sslip.io HTTPS
+http://89.167.93.25 {
+    redir https://89.167.93.25.sslip.io{uri} permanent
+}

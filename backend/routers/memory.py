@@ -1,50 +1,51 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import Optional
-import os
-import asyncpg
+from fastapi import APIRouter, Depends
+from backend.auth import get_current_user
+from backend.db.postgres import get_supabase
 
-router = APIRouter(prefix="/memory", tags=["memory"])
+router = APIRouter()
 
 
-class GoalIn(BaseModel):
-    user_id: str
-    name: str
-    urgency: Optional[str] = "medium"
+@router.get("/conversations")
+async def list_conversations(limit: int = 20, user_id: str = Depends(get_current_user)):
+    db = get_supabase()
+    res = db.table("conversations") \
+        .select("id, title, created_at, last_message_at") \
+        .eq("user_id", user_id) \
+        .order("last_message_at", desc=True) \
+        .limit(limit) \
+        .execute()
+    return res.data or []
 
 
-async def _get_conn():
-    return await asyncpg.connect(os.getenv("DATABASE_URL", "postgresql://jarvis:jarvis@localhost:5432/jarvis").replace("+asyncpg", ""))
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, user_id: str = Depends(get_current_user)):
+    db = get_supabase()
+    conv = db.table("conversations") \
+        .select("*") \
+        .eq("id", conversation_id) \
+        .eq("user_id", user_id) \
+        .single() \
+        .execute()
+    msgs = db.table("messages") \
+        .select("*") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .execute()
+    return {"conversation": conv.data, "messages": msgs.data or []}
 
 
-@router.get("/goals/{user_id}")
-async def get_goals(user_id: str):
-    conn = await _get_conn()
-    rows = await conn.fetch(
-        "SELECT id, name, status, urgency, last_touched_at FROM goals WHERE user_id=$1 AND status='active'",
-        user_id,
-    )
-    await conn.close()
-    return [dict(r) for r in rows]
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, user_id: str = Depends(get_current_user)):
+    db = get_supabase()
+    db.table("conversations").delete().eq("id", conversation_id).eq("user_id", user_id).execute()
+    return {"status": "deleted"}
 
 
-@router.post("/goals")
-async def create_goal(goal: GoalIn):
-    conn = await _get_conn()
-    row = await conn.fetchrow(
-        "INSERT INTO goals (user_id, name, urgency) VALUES ($1, $2, $3) RETURNING id",
-        goal.user_id, goal.name, goal.urgency,
-    )
-    await conn.close()
-    return {"id": str(row["id"]), "name": goal.name}
-
-
-@router.get("/patterns/{user_id}")
-async def get_patterns(user_id: str):
-    conn = await _get_conn()
-    rows = await conn.fetch(
-        "SELECT pattern_key, pattern_value, confidence FROM behavioral_patterns WHERE user_id=$1",
-        user_id,
-    )
-    await conn.close()
-    return [dict(r) for r in rows]
+@router.post("/search")
+async def search_memory(body: dict, user_id: str = Depends(get_current_user)):
+    from backend.rag import search_rag
+    query = body.get("query", "")
+    if not query:
+        return []
+    results = await search_rag(query=query, user_id=user_id)
+    return results

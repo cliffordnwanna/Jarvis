@@ -1,61 +1,43 @@
 """
-JARVIS v2 — World State Builder
+JARVIS v3 — World State Builder
 ================================
-Assembles the complete world-state object from free APIs.
-Every LLM call receives this object. This is the product.
+Ported from v2. Battery-related logic removed (Fix 2).
+Device layer now only tracks network, platform, headphones — no battery fields.
 
-APIs used (all free, no cost):
+APIs used (all free, no cost unless noted):
   - Open-Meteo          → weather + air quality (no key, unlimited)
   - Nominatim OSM       → geocoding coords→city (no key, 1 req/s)
   - Sunrise-Sunset.org  → sunrise/sunset times (no key, unlimited)
-  - WorldTimeAPI        → timezone + week info (no key, unlimited)
+  - WorldTimeAPI        → week number (no key, unlimited)
   - Nager.Date          → public holidays (no key, unlimited)
   - Overpass API (OSM)  → nearby places (no key, unlimited)
   - TomTom Traffic      → congestion + ETA (free key, 2500/day)
-  - Google Calendar API → events (OAuth, free quota)
-  - Browser APIs        → battery, network, GPS (client-side only)
-
-Architecture: Event-driven, not polling.
-  Triggers: location_changed, calendar_update, weather_shifted,
-            battery_threshold, time_window, user_activity
+  - Google Calendar API → events (OAuth — stubbed, Phase 2)
 """
 
 import asyncio
 import math
+import os
 import httpx
 from datetime import datetime, date
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
-
-TOMTOM_API_KEY = "YOUR_FREE_TOMTOM_KEY"   # free at developer.tomtom.com
-GOOGLE_CALENDAR_TOKEN = "YOUR_OAUTH_TOKEN" # from Google OAuth flow
-
 NOMINATIM_HEADERS = {
-    "User-Agent": "JARVIS-Personal-AI/2.0 (your@email.com)"  # required by OSM policy
+    "User-Agent": "JARVIS-Personal-AI/3.0 (nwannachumaclifford@gmail.com)"
 }
 
 
 # ─── LAYER 1: TEMPORAL ────────────────────────────────────────────────────────
 
 async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = None) -> dict:
-    """
-    Sources: WorldTimeAPI (week number only), Sunrise-Sunset.org, Nager.Date, math (moon phase)
-    hint_timezone: IANA timezone string sent by the browser (e.g. "Africa/Lagos").
-    When provided it overrides the IP-based timezone from WorldTimeAPI, which is
-    unreliable on VPNs and always wrong when the server runs on localhost.
-    """
     async with httpx.AsyncClient(timeout=5.0) as client:
-
-        # WorldTimeAPI — only used for week_number; timezone is overridden by hint
         week_number = datetime.now().isocalendar()[1]
         try:
             tz_resp = await client.get("http://worldtimeapi.org/api/ip")
             tz_data = tz_resp.json()
             week_number = tz_data.get("week_number", week_number)
-            # Fall back to API timezone only when no hint was provided
             if not hint_timezone:
                 hint_timezone = tz_data.get("timezone") or None
         except Exception:
@@ -63,7 +45,6 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
 
         timezone = hint_timezone or "UTC"
 
-        # Compute UTC offset from the actual IANA zone — never from the API string
         try:
             tz_obj = ZoneInfo(timezone)
             _now_for_offset = datetime.now(tz_obj)
@@ -74,14 +55,12 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
         except Exception:
             utc_offset = "+00:00"
 
-        # Current time in user's timezone
         try:
             tz = ZoneInfo(timezone)
             now = datetime.now(tz)
         except Exception:
             now = datetime.now()
 
-        # Sunrise-Sunset.org — free, no key, no limits
         sunrise = sunset = None
         try:
             sun_resp = await client.get(
@@ -89,7 +68,6 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
                 params={"lat": lat, "lng": lng, "formatted": 0, "date": "today"}
             )
             sun_data = sun_resp.json().get("results", {})
-            # API returns UTC times — convert to local
             sunrise_utc = datetime.fromisoformat(sun_data.get("sunrise", ""))
             sunset_utc = datetime.fromisoformat(sun_data.get("sunset", ""))
             sunrise = sunrise_utc.astimezone(ZoneInfo(timezone)).strftime("%H:%M")
@@ -97,11 +75,9 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
         except Exception:
             pass
 
-        # Nager.Date — public holidays by country code
         is_public_holiday = False
         holiday_name = None
         try:
-            # Country code resolved later from geocoding; default NG
             country_code = "NG"
             holiday_resp = await client.get(
                 f"https://date.nager.at/api/v3/PublicHolidays/{now.year}/{country_code}"
@@ -116,7 +92,6 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
         except Exception:
             pass
 
-        # Time of day classification
         hour = now.hour
         if 5 <= hour < 8:
             time_of_day = "dawn"
@@ -131,7 +106,6 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
         else:
             time_of_day = "night"
 
-        # Moon phase — calculated mathematically, no API needed
         moon_phase = _calculate_moon_phase(now.date())
 
         return {
@@ -139,7 +113,7 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
             "timezone": timezone,
             "utc_offset": utc_offset,
             "day_of_week": now.strftime("%A"),
-            "day_number": now.weekday(),       # 0=Monday, 6=Sunday
+            "day_number": now.weekday(),
             "week_number": week_number,
             "month": now.month,
             "year": now.year,
@@ -157,7 +131,6 @@ async def fetch_temporal(lat: float, lng: float, hint_timezone: str | None = Non
 
 
 def _calculate_moon_phase(d: date) -> str:
-    """Calculate moon phase from date — no API needed."""
     diff = (d - date(2001, 1, 1)).days
     cycle = diff % 29.53
     if cycle < 1.85: return "new_moon"
@@ -172,7 +145,7 @@ def _calculate_moon_phase(d: date) -> str:
 
 def _is_daylight(now: datetime, sunrise: Optional[str], sunset: Optional[str]) -> bool:
     if not sunrise or not sunset:
-        return 6 <= now.hour < 18  # fallback
+        return 6 <= now.hour < 18
     try:
         h, m = map(int, sunrise.split(":"))
         sr_min = h * 60 + m
@@ -187,11 +160,6 @@ def _is_daylight(now: datetime, sunrise: Optional[str], sunset: Optional[str]) -
 # ─── LAYER 2: LOCATION ────────────────────────────────────────────────────────
 
 async def fetch_location(lat: float, lng: float) -> dict:
-    """
-    Sources: Nominatim OSM (geocoding), ip-api.com (IP fallback)
-    Trigger: on GPS coordinates change (>100m)
-    Note: Nominatim requires 1 req/s max — always cache results
-    """
     city = district = state = country = country_code = "Unknown"
 
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -203,37 +171,20 @@ async def fetch_location(lat: float, lng: float) -> dict:
             )
             data = resp.json()
             addr = data.get("address", {})
-            # Extended fallback chain — covers Nigeria and other regions where
-            # Nominatim uses state/county/suburb instead of city/town/village
             city = (
-                addr.get("city") or
-                addr.get("town") or
-                addr.get("village") or
-                addr.get("municipality") or
-                addr.get("city_district") or
-                addr.get("suburb") or
-                addr.get("county") or
-                addr.get("state_district") or
-                addr.get("state") or
-                "Unknown"
+                addr.get("city") or addr.get("town") or addr.get("village") or
+                addr.get("municipality") or addr.get("city_district") or
+                addr.get("suburb") or addr.get("county") or
+                addr.get("state_district") or addr.get("state") or "Unknown"
             )
             district = (
-                addr.get("suburb") or
-                addr.get("neighbourhood") or
-                addr.get("district") or
-                addr.get("city_district") or
-                ""
+                addr.get("suburb") or addr.get("neighbourhood") or
+                addr.get("district") or addr.get("city_district") or ""
             )
-            state = (
-                addr.get("state") or
-                addr.get("state_district") or
-                addr.get("county") or
-                ""
-            )
+            state = addr.get("state") or addr.get("state_district") or addr.get("county") or ""
             country = addr.get("country", "Unknown")
             country_code = addr.get("country_code", "").upper()
         except Exception:
-            # Fallback: IP-based geolocation
             try:
                 ip_resp = await client.get("http://ip-api.com/json")
                 ip_data = ip_resp.json()
@@ -252,22 +203,17 @@ async def fetch_location(lat: float, lng: float) -> dict:
         "district": district,
         "country": country,
         "country_code": country_code,
-        # These are enriched by the learning layer over time:
-        "location_type": "unknown",        # → "home"/"work"/"gym" after learning
-        "location_label": None,            # → "Wema Bank Office" after learning
-        "duration_here_minutes": None,     # → tracked in Redis
-        "movement_state": "unknown",       # → "stationary"/"walking"/"driving"
+        "location_type": "unknown",
+        "location_label": None,
+        "duration_here_minutes": None,
+        "movement_state": "unknown",
         "speed_kmh": 0,
     }
 
 
-# ─── LAYER 3: TRAJECTORY (derived from location history) ─────────────────────
+# ─── LAYER 3: TRAJECTORY ─────────────────────────────────────────────────────
 
 def build_trajectory(location_history: list[dict]) -> dict:
-    """
-    Derived from PostgreSQL location history — no external API.
-    Trigger: whenever location updates.
-    """
     if len(location_history) < 2:
         return {
             "came_from": None,
@@ -285,12 +231,11 @@ def build_trajectory(location_history: list[dict]) -> dict:
         "came_from": prev.get("location_label") or prev.get("city"),
         "time_left_previous": prev.get("left_at"),
         "commute_complete": (
-            curr.get("location_type") == "home" and
-            prev.get("location_type") == "work"
+            curr.get("location_type") == "home" and prev.get("location_type") == "work"
         ),
-        "probable_next_location": "sleep",   # enriched by pattern learning
+        "probable_next_location": "sleep",
         "movement_intent": "settled" if curr.get("movement_state") == "stationary" else "commuting",
-        "usual_departure_time": None,         # → populated from pattern DB
+        "usual_departure_time": None,
         "trajectory_confidence": 0.88,
     }
 
@@ -298,16 +243,10 @@ def build_trajectory(location_history: list[dict]) -> dict:
 # ─── LAYER 4: ENVIRONMENT ─────────────────────────────────────────────────────
 
 async def fetch_environment(lat: float, lng: float) -> dict:
-    """
-    Sources: Open-Meteo (weather + air quality) — completely free, no key, no limits
-    Trigger: every 30 minutes OR when weather_code changes significantly
-    """
     weather = {}
     air_quality = {}
 
     async with httpx.AsyncClient(timeout=8.0) as client:
-
-        # Open-Meteo weather — includes forecast
         try:
             resp = await client.get(
                 "https://api.open-meteo.com/v1/forecast",
@@ -330,7 +269,6 @@ async def fetch_environment(lat: float, lng: float) -> dict:
             curr = data.get("current", {})
             hourly = data.get("hourly", {})
             daily = data.get("daily", {})
-
             rain_probs = hourly.get("precipitation_probability", [0] * 24)
 
             weather = {
@@ -357,7 +295,6 @@ async def fetch_environment(lat: float, lng: float) -> dict:
         except Exception as e:
             weather = {"error": str(e)}
 
-        # Open-Meteo Air Quality — also free, no key
         try:
             aq_resp = await client.get(
                 "https://air-quality-api.open-meteo.com/v1/air-quality",
@@ -382,7 +319,6 @@ async def fetch_environment(lat: float, lng: float) -> dict:
 
 
 def _wmo_to_condition(code: int) -> str:
-    """Convert WMO weather code to readable condition."""
     if code == 0: return "clear"
     elif code in (1, 2, 3): return "partly_cloudy"
     elif code in (45, 48): return "foggy"
@@ -407,7 +343,7 @@ def _wmo_to_description(code: int) -> str:
 
 
 def _degrees_to_compass(deg: float) -> str:
-    dirs = ["N","NE","E","SE","S","SW","W","NW"]
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     return dirs[round(deg / 45) % 8]
 
 
@@ -421,125 +357,44 @@ def _aqi_category(aqi: Optional[int]) -> str:
     else: return "hazardous"
 
 
-# ─── LAYER 5: DEVICE (client-side — sent from PWA frontend) ──────────────────
+# ─── LAYER 5: DEVICE (battery removed — Fix 2) ───────────────────────────────
 
 def build_device_context(client_payload: dict) -> dict:
     """
-    Sources: Browser Battery Status API, Network Information API
-    These are sent from the PWA frontend to the backend.
-    Trigger: on battery level change, network change
+    Tracks network and headphones only. Battery detection removed (unreliable
+    across devices and platforms — see PRD Section 14).
     """
-    battery_pct = client_payload.get("battery_pct", 100)
-    charging = client_payload.get("charging", False)
-
-    # Infer preferred interaction modality
     headphones = client_payload.get("headphones_connected", False)
-    battery_low = battery_pct < 20
-    preferred_modality = "voice" if headphones else "text"
-
     return {
-        "battery_pct": battery_pct,
-        "charging": charging,
-        "battery_state": "charging" if charging else "discharging",
-        "battery_low": battery_low,
-        "estimated_battery_life_minutes": _estimate_battery_life(battery_pct, charging),
         "network_type": client_payload.get("network_type", "unknown"),
         "network_quality": client_payload.get("network_quality", "unknown"),
         "effective_type": client_payload.get("effective_type", "4g"),
         "screen_on": client_payload.get("screen_on", True),
         "platform": client_payload.get("platform", "web"),
         "headphones_connected": headphones,
-        "preferred_modality": preferred_modality,
+        "preferred_modality": "voice" if headphones else "text",
     }
 
 
-def _estimate_battery_life(pct: int, charging: bool) -> Optional[int]:
-    if charging:
-        return None
-    # Rough estimate: typical smartphone drains ~10% per hour active
-    return (pct / 10) * 60
-
-
-# ─── LAYER 6: CALENDAR (Google Calendar API) ─────────────────────────────────
+# ─── LAYER 6: CALENDAR (stubbed — Phase 2) ───────────────────────────────────
 
 async def fetch_calendar(timezone: str = "UTC") -> dict:
     """
-    Source: Google Calendar API (free with OAuth)
-    Trigger: on calendar event create/update, or every 15 min
+    Google Calendar API integration is deferred to Phase 2.
+    Returns empty structure so all downstream consumers receive consistent keys.
     """
-    # In production: use google-auth-oauthlib + googleapiclient
-    # Placeholder showing the structure
-    events_today = []
-    events_tomorrow = []
-
-    # Derive cognitive load from meetings
-    meeting_fatigue = _calculate_meeting_fatigue(events_today)
-
-    now = datetime.now(ZoneInfo(timezone))
-
-    upcoming = [e for e in events_today if _event_time(e) > now]
-    completed = [e for e in events_today if _event_time(e) <= now]
-
-    next_event = upcoming[0] if upcoming else None
-    next_tomorrow = events_tomorrow[0] if events_tomorrow else None
-
     return {
-        "events_today_total": len(events_today),
-        "events_remaining": len(upcoming),
-        "events_completed": len(completed),
-        "meeting_load": _meeting_load_label(len(events_today)),
-        "meeting_fatigue_score": meeting_fatigue,
-        "has_back_to_back": _has_back_to_back(events_today),
-        "next_event": _format_event(next_event, now) if next_event else None,
-        "next_event_tomorrow": _format_event(next_tomorrow, now) if next_tomorrow else None,
-        "free_blocks_today": _find_free_blocks(events_today, now),
-        "in_meeting_now": _is_in_meeting(events_today, now),
+        "events_today_total": 0,
+        "events_remaining": 0,
+        "events_completed": 0,
+        "meeting_load": "free",
+        "meeting_fatigue_score": 0.0,
+        "has_back_to_back": False,
+        "next_event": None,
+        "next_event_tomorrow": None,
+        "free_blocks_today": [],
+        "in_meeting_now": False,
     }
-
-
-def _calculate_meeting_fatigue(events: list) -> float:
-    """More meetings + back-to-back = higher fatigue score (0-1)."""
-    base = min(len(events) / 8, 1.0)
-    back_to_back_penalty = 0.2 if _has_back_to_back(events) else 0
-    return min(base + back_to_back_penalty, 1.0)
-
-
-def _meeting_load_label(count: int) -> str:
-    if count == 0: return "free"
-    elif count <= 2: return "light"
-    elif count <= 4: return "moderate"
-    else: return "heavy"
-
-
-def _has_back_to_back(events: list) -> bool:
-    # Check if any two events overlap or have <15 min gap
-    return False  # implement with actual event times
-
-
-def _event_time(event: dict) -> datetime:
-    return datetime.now()  # implement with actual event parsing
-
-
-def _format_event(event: dict, now: datetime) -> Optional[dict]:
-    if not event:
-        return None
-    event_time = _event_time(event)
-    delta = event_time - now
-    return {
-        "title": event.get("summary", "Meeting"),
-        "time": event_time.strftime("%H:%M"),
-        "in_minutes": int(delta.total_seconds() / 60),
-        "location": event.get("location"),
-        "is_virtual": "meet.google" in (event.get("location") or ""),
-    }
-
-
-def _find_free_blocks(events: list, now: datetime) -> list:
-    return []  # implement gap detection between events
-
-
-def _is_in_meeting(events: list, now: datetime) -> bool:
-    return False  # implement overlap check
 
 
 # ─── LAYER 7: TRAFFIC (TomTom free tier) ─────────────────────────────────────
@@ -549,11 +404,8 @@ async def fetch_traffic(
     home_lat: float = None, home_lng: float = None,
     work_lat: float = None, work_lng: float = None,
 ) -> dict:
-    """
-    Source: TomTom Traffic API (free key, 2500 req/day)
-    Trigger: only in pre-commute windows (7-9am, 4-7pm)
-    """
-    if not TOMTOM_API_KEY or TOMTOM_API_KEY == "YOUR_FREE_TOMTOM_KEY":
+    tomtom_key = os.getenv("TOMTOM_API_KEY", "")
+    if not tomtom_key:
         return {"available": False, "reason": "no_api_key"}
 
     congestion = "unknown"
@@ -562,21 +414,18 @@ async def fetch_traffic(
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
             resp = await client.get(
-                f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json",
-                params={"key": TOMTOM_API_KEY, "point": f"{lat},{lng}"}
+                "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json",
+                params={"key": tomtom_key, "point": f"{lat},{lng}"}
             )
             data = resp.json().get("flowSegmentData", {})
             current_speed = data.get("currentSpeed", 0)
             free_flow_speed = data.get("freeFlowSpeed", 1)
-
             ratio = current_speed / max(free_flow_speed, 1)
             if ratio > 0.8: congestion = "low"
             elif ratio > 0.5: congestion = "moderate"
             elif ratio > 0.25: congestion = "heavy"
             else: congestion = "severe"
-
-            delay = max(0, int((1 - ratio) * 30))  # rough delay estimate
-
+            delay = max(0, int((1 - ratio) * 30))
         except Exception:
             pass
 
@@ -584,20 +433,16 @@ async def fetch_traffic(
         "available": True,
         "current_congestion": congestion,
         "delay_minutes": delay,
-        "home_to_work_eta_now": None,      # from routing API call
-        "usual_eta_minutes": None,          # from learned patterns
+        "home_to_work_eta_now": None,
+        "usual_eta_minutes": None,
         "incidents_on_route": 0,
-        "best_departure_window": None,      # derived from forecast
+        "best_departure_window": None,
     }
 
 
-# ─── LAYER 8: NEARBY (Overpass API — OpenStreetMap) ──────────────────────────
+# ─── LAYER 8: NEARBY (Overpass API — OSM) ────────────────────────────────────
 
 async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
-    """
-    Source: Overpass API (OpenStreetMap) — completely free, no API key
-    Trigger: on location change (>200m)
-    """
     query = f"""
     [out:json][timeout:10];
     (
@@ -612,12 +457,8 @@ async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
     out body;
     """
     results = {
-        "restaurants": [],
-        "cafes": [],
-        "pharmacies": [],
-        "gyms": [],
-        "petrol_stations": [],
-        "hospitals": [],
+        "restaurants": [], "cafes": [], "pharmacies": [],
+        "gyms": [], "petrol_stations": [], "hospitals": [],
     }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -626,18 +467,14 @@ async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
                 "https://overpass-api.de/api/interpreter",
                 data={"data": query}
             )
-            elements = resp.json().get("elements", [])
-
-            for el in elements:
+            for el in resp.json().get("elements", []):
                 tags = el.get("tags", {})
                 amenity = tags.get("amenity")
                 name = tags.get("name", "Unnamed")
                 el_lat = el.get("lat", lat)
                 el_lng = el.get("lon", lng)
                 dist = _haversine_distance(lat, lng, el_lat, el_lng)
-
                 item = {"name": name, "distance_m": int(dist), "tags": tags}
-
                 if amenity in ("restaurant", "fast_food"):
                     results["restaurants"].append(item)
                 elif amenity == "cafe":
@@ -650,15 +487,11 @@ async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
                     results["hospitals"].append(item)
                 elif tags.get("leisure") == "fitness_centre":
                     results["gyms"].append(item)
-
-            # Sort by distance
             for key in results:
                 results[key].sort(key=lambda x: x["distance_m"])
-
         except Exception:
             pass
 
-    # Summary stats
     return {
         "restaurants_open_count": len(results["restaurants"]),
         "nearest_restaurant": results["restaurants"][0] if results["restaurants"] else None,
@@ -667,39 +500,30 @@ async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
         "gym_available": len(results["gyms"]) > 0,
         "petrol_available": len(results["petrol_stations"]) > 0,
         "hospital_nearby": len(results["hospitals"]) > 0,
-        "raw": results,  # full list available for generative UI
+        "raw": results,
     }
 
 
 def _haversine_distance(lat1, lng1, lat2, lng2) -> float:
-    """Distance in metres between two GPS coordinates."""
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lng2 - lng1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-# ─── LAYERS 9-10: COGNITIVE + BIOLOGICAL (fully derived) ─────────────────────
+# ─── LAYERS 9-10: COGNITIVE + BIOLOGICAL ─────────────────────────────────────
 
 def derive_cognitive_state(calendar: dict, temporal: dict, behavioral: dict) -> dict:
-    """
-    Derived from: calendar load, time of day, learned patterns.
-    No external API. This is pure inference.
-    """
     hour = temporal.get("hour_decimal", 12)
     meeting_fatigue = calendar.get("meeting_fatigue_score", 0)
     in_meeting = calendar.get("in_meeting_now", False)
 
-    # Focus degrades throughout the day, recovers after rest
     base_focus = 1.0 - (hour - 9) / 16 if hour >= 9 else 0.5
     focus = max(0, min(1, base_focus - meeting_fatigue * 0.4))
-
     fatigue = min(1, meeting_fatigue + (hour - 9) / 24 if hour >= 9 else 0.2)
     overload = min(1, (meeting_fatigue + (1 - focus)) / 2)
-
-    # Interrupt sensitivity: high when in meeting, tired, or focused
     interrupt_sensitivity = max(in_meeting * 0.9, fatigue * 0.6, focus * 0.5)
 
     return {
@@ -715,22 +539,13 @@ def derive_cognitive_state(calendar: dict, temporal: dict, behavioral: dict) -> 
 
 
 def derive_biological_signals(temporal: dict, behavioral: dict) -> dict:
-    """
-    Derived from time patterns + learned user habits.
-    hunger_probability rises the longer since the last logged meal.
-    """
     hour = temporal.get("hour_decimal", 12)
     hours_since_meal = behavioral.get("hours_since_last_meal", 0)
-
-    # Hunger model: rises after 3h, peaks at 6h
     hunger = min(1.0, max(0, (hours_since_meal - 3) / 3))
-
-    # Sleep pressure: rises after typical bedtime
-    typical_sleep = behavioral.get("typical_sleep_hour", 1.0)  # 1am default
+    typical_sleep = behavioral.get("typical_sleep_hour", 1.0)
     adjusted_hour = hour if hour > 12 else hour + 24
     typical_adjusted = typical_sleep if typical_sleep > 12 else typical_sleep + 24
     sleep_pressure = min(1.0, max(0, (adjusted_hour - typical_adjusted + 2) / 3))
-
     energy = max(0, 1 - (sleep_pressure * 0.5 + hour / 24 * 0.3))
 
     return {
@@ -752,13 +567,9 @@ def _minutes_until(temporal: dict, target_hour: float) -> int:
     return int((target_hour - current) * 60)
 
 
-# ─── LAYER 11: GOALS (PostgreSQL memory) ─────────────────────────────────────
+# ─── LAYER 11: GOALS ─────────────────────────────────────────────────────────
 
 def load_goals(db_goals: list[dict]) -> dict:
-    """
-    Source: PostgreSQL — populated from conversations and explicit user input.
-    This layer grows richer over time without any API calls.
-    """
     active = [g for g in db_goals if g.get("status") == "active"]
     stale = [g for g in active if g.get("days_since_touched", 0) > 3]
     high_urgency = [g for g in active if g.get("urgency") == "high"]
@@ -773,46 +584,6 @@ def load_goals(db_goals: list[dict]) -> dict:
     }
 
 
-# ─── LAYER 12: INFERRED INTENT (LLM synthesis) ───────────────────────────────
-
-async def infer_intent(world_state: dict, llm_client) -> dict:
-    """
-    The synthesis layer. Aggregates all 11 layers into actionable intelligence.
-    Uses Groq (fast, cheap) for simple classification.
-    Uses Claude for complex multi-signal synthesis.
-    """
-    prompt = f"""
-You are the JARVIS world-state inference engine.
-
-Given this complete world state, determine:
-1. probable_current_activity: one of [working, commuting, eating, exercising, socializing, winding_down, sleeping, unknown]
-2. likely_needs: list of up to 3 items from [food, water, rest, movement, focus, social, reminder, navigation]
-3. nudge_type: one of [none, gentle, standard, urgent]
-4. nudge_delivery: one of [none, voice, sidebar_card, push_notification]
-5. interrupt_score: float 0-1 (1 = definitely interrupt)
-6. context_summary: one sentence summarizing the user's current situation for LLM context injection
-
-Respond in JSON only. No explanation.
-
-World state:
-{world_state}
-"""
-    # In production: call Groq here (fast + free tier available)
-    # response = await groq_client.chat.completions.create(...)
-    # For now, return a placeholder
-    return {
-        "probable_activity": "winding_down",
-        "likely_needs": ["food", "rest"],
-        "nudge_type": "gentle",
-        "nudge_delivery": "sidebar_card",
-        "interrupt_score": 0.38,
-        "context_summary": (
-            f"Late evening. Heavy day. Hungry and winding down. "
-            f"ACS application stale. Next commitment tomorrow at 09:00."
-        )
-    }
-
-
 # ─── MASTER BUILDER ───────────────────────────────────────────────────────────
 
 async def build_world_state(
@@ -822,15 +593,11 @@ async def build_world_state(
     location_history: list[dict],
     behavioral: dict,
     db_goals: list[dict],
-    llm_client=None,
 ) -> dict:
     """
-    Main entry point. Assembles the complete world state from all layers.
-    Called event-driven (on location change, calendar update, etc.)
-    Returns the object injected into every LLM call.
+    Main entry point. Assembles the complete world state from all layers in parallel.
+    Called on each POST /context/update.
     """
-
-    # Fetch all external data in parallel
     temporal, location, environment, calendar, traffic, nearby = await asyncio.gather(
         fetch_temporal(lat, lng, hint_timezone=behavioral.get("timezone")),
         fetch_location(lat, lng),
@@ -841,7 +608,6 @@ async def build_world_state(
         return_exceptions=True,
     )
 
-    # Handle any failed fetches gracefully
     temporal = temporal if not isinstance(temporal, Exception) else {}
     location = location if not isinstance(location, Exception) else {}
     environment = environment if not isinstance(environment, Exception) else {}
@@ -849,17 +615,15 @@ async def build_world_state(
     traffic = traffic if not isinstance(traffic, Exception) else {}
     nearby = nearby if not isinstance(nearby, Exception) else {}
 
-    # Build derived layers
     device = build_device_context(device_payload)
     trajectory = build_trajectory(location_history)
     cognitive = derive_cognitive_state(calendar, temporal, behavioral)
     biological = derive_biological_signals(temporal, behavioral)
     goals = load_goals(db_goals)
 
-    # Assemble world state
-    world_state = {
+    return {
         "_meta": {
-            "schema_version": "2.0",
+            "schema_version": "3.0",
             "built_at": datetime.now().isoformat(),
             "lat": lat,
             "lng": lng,
@@ -877,107 +641,38 @@ async def build_world_state(
         "goals": goals,
     }
 
-    # Final synthesis layer (LLM)
-    if llm_client:
-        world_state["inferred"] = await infer_intent(world_state, llm_client)
-    else:
-        world_state["inferred"] = {
-            "probable_activity": "unknown",
-            "likely_needs": [],
-            "nudge_type": "none",
-            "context_summary": "World state assembled. Inference layer requires LLM client.",
-        }
-
-    return world_state
-
-
-# ─── SYSTEM PROMPT INJECTOR ───────────────────────────────────────────────────
 
 def build_system_prompt(world_state: dict, user_preferences: dict) -> str:
-    """
-    Converts world state into the system prompt injected into every LLM call.
-    This is what makes every response contextually aware.
-    """
     ws = world_state
     t = ws.get("temporal", {})
-    l = ws.get("location", {})
+    loc = ws.get("location", {})
     e = ws.get("environment", {})
     c = ws.get("cognitive", {})
     b = ws.get("biological", {})
     g = ws.get("goals", {})
-    inf = ws.get("inferred", {})
 
-    context_summary = inf.get("context_summary", "")
-
-    stale_goals = [goal["name"] for goal in g.get("stale_goals", [])]
-    stale_str = f"Stale goals (not touched in 3+ days): {', '.join(stale_goals)}." if stale_goals else ""
+    stale_goals = [goal.get("title", "") for goal in g.get("stale_goals", [])]
+    stale_str = f"Stale goals (3+ days): {', '.join(stale_goals)}." if stale_goals else ""
 
     return f"""You are JARVIS — a proactive personal AI assistant.
 
 ## Current World State
 Time: {t.get('time_of_day', 'unknown')} · {t.get('timestamp', '')[:16]}
-Location: {l.get('district', '')}, {l.get('city', '')} ({l.get('location_type', 'unknown')} location)
+Location: {loc.get('district', '')}, {loc.get('city', '')} ({loc.get('location_type', 'unknown')} location)
 Weather: {e.get('weather', {}).get('description', 'unknown')}, {e.get('weather', {}).get('temp_c', '?')}°C
-User state: focus={c.get('estimated_focus', '?')}, fatigue={c.get('estimated_fatigue', '?')}, hunger_prob={b.get('hunger_probability', '?')}
-Calendar: {ws.get('calendar', {}).get('events_today_total', 0)} meetings today, next: {ws.get('calendar', {}).get('next_event_tomorrow', {}) or 'none tomorrow'}
+User state: focus={c.get('estimated_focus', '?')}, fatigue={c.get('estimated_fatigue', '?')}
+Calendar: {ws.get('calendar', {}).get('events_today_total', 0)} meetings today
 {stale_str}
 
-## Inferred Context
-{context_summary}
-
 ## Rules
-- Every response must be grounded in the world state above
+- Ground every response in the world state above
 - Be specific: use actual city names, times, weather conditions
-- Preferred response modality: {c.get('preferred_modality', 'text')}
+- Preferred modality: {c.get('preferred_modality', 'text')}
 - Preferred response length: {c.get('preferred_response_length', 'medium')}
-- If hunger_probability > 0.7 and user mentions food: suggest nearby options with delivery links
-- If rain forecast within 2h and user mentions going out: warn proactively
-- Never say "I don't have access to" — use the world state you have
-- Challenge the user when a better path exists
+- Warn proactively if rain > 60% and user mentions going out
+- Never say "I don't have access to" — use what you have
 
-## User Profile
+## User
 Name: {user_preferences.get('name', 'Clifford')}
-Goals: {', '.join([g['name'] for g in g.get('active_goals', [])])}
+Goals: {', '.join([g.get('title', '') for g in g.get('active_goals', [])])}
 """
-
-
-# ─── ENTRY POINT FOR TESTING ─────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import json
-
-    # Test with Lagos coordinates
-    result = asyncio.run(build_world_state(
-        lat=6.5244,
-        lng=3.3792,
-        device_payload={
-            "battery_pct": 42,
-            "charging": False,
-            "headphones_connected": True,
-            "network_type": "wifi",
-            "network_quality": "strong",
-            "platform": "ios",
-        },
-        location_history=[],
-        behavioral={
-            "hours_since_last_meal": 5.2,
-            "typical_sleep_hour": 1.0,
-            "typical_sleep_time": "01:00",
-            "avg_sleep_hours": 6.0,
-            "timezone": "Africa/Lagos",
-        },
-        db_goals=[
-            {"name": "ACS application", "status": "active", "urgency": "high", "days_since_touched": 4},
-            {"name": "UpJobs launch", "status": "active", "urgency": "high", "days_since_touched": 0},
-            {"name": "Australia visa", "status": "active", "urgency": "medium", "days_since_touched": 2},
-        ],
-    ))
-
-    print(json.dumps(result, indent=2, default=str))
-
-    # Also print the system prompt
-    system_prompt = build_system_prompt(result, {"name": "Clifford"})
-    print("\n" + "="*60)
-    print("SYSTEM PROMPT (injected into every LLM call):")
-    print("="*60)
-    print(system_prompt)

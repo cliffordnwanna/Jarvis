@@ -1,36 +1,28 @@
-import { AlertCircle, Target } from "lucide-react"
-
-interface GoalReminderCardProps {
+interface Props {
   goal_name: string
   days_stale: number
   urgency: string
   suggested_action: string
 }
 
-export function GoalReminderCard(props: GoalReminderCardProps) {
-  const isHigh = props.urgency.toLowerCase() === "high"
-  const badge = isHigh ? "border-red-400/30 text-red-200" : "border-amber-400/30 text-amber-200"
+const urgencyColor: Record<string, string> = {
+  high: 'text-red-400 border-red-500/30',
+  medium: 'text-yellow-400 border-yellow-500/30',
+  low: 'text-jarvis-muted border-jarvis-border',
+}
 
+export default function GoalReminderCard({ goal_name, days_stale, urgency, suggested_action }: Props) {
   return (
-    <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-      <div className="flex items-start justify-between gap-4 mb-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <Target className="w-4 h-4 text-white/60" />
-          <h3 className="text-sm font-semibold text-white truncate">{props.goal_name}</h3>
-        </div>
-        {isHigh && <AlertCircle className="w-4 h-4 text-red-300" />}
+    <div className={`rounded-xl border bg-jarvis-surface p-4 w-72 ${urgencyColor[urgency] || urgencyColor.low}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-jarvis-muted uppercase tracking-widest">Goal</span>
+        <span className={`text-xs font-medium capitalize ${urgencyColor[urgency]?.split(' ')[0]}`}>{urgency}</span>
       </div>
-
-      <div className="flex items-center gap-2 mb-3">
-        <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${badge}`}>
-          {props.days_stale}d stale
-        </span>
-        <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 text-white/60 capitalize">
-          {props.urgency}
-        </span>
-      </div>
-
-      <p className="text-sm text-white/80 leading-relaxed">{props.suggested_action}</p>
+      <p className="text-sm font-medium text-jarvis-text mb-1">{goal_name}</p>
+      <p className="text-xs text-jarvis-muted mb-3">Not touched in {days_stale} days</p>
+      {suggested_action && (
+        <p className="text-xs text-jarvis-text/80 italic">→ {suggested_action}</p>
+      )}
     </div>
   )
 }

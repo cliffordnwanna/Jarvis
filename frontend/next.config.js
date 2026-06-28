@@ -1,40 +1,19 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    // Windows dev environments can intermittently fail to spawn the typecheck worker (EPERM).
-    // Keep builds unblocked; run `npx tsc --noEmit` separately when needed.
-    ignoreBuildErrors: true,
-  },
-  experimental: {
-    webpackBuildWorker: false,
-  },
+  // Fixes symlink issues on Windows dev machines
   webpack: (config) => {
-    // Avoid filesystem cache rename/lock issues on Windows/Defender.
-    config.cache = false
+    config.resolve.symlinks = false
     return config
   },
-  headers: async () => {
+  async headers() {
     return [
       {
-        source: "/:path*",
+        source: '/(.*)',
         headers: [
-          {
-            key: "X-Content-Type-Options",
-            value: "nosniff",
-          },
-          {
-            key: "X-Frame-Options",
-            value: "SAMEORIGIN",
-          },
-          {
-            key: "X-XSS-Protection",
-            value: "1; mode=block",
-          },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
         ],
       },
     ]

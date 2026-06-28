@@ -1,592 +1,367 @@
-"use client"
-import { CopilotKit } from "@copilotkit/react-core"
-import { useCopilotAction, useCopilotChatInternal, useCopilotReadable } from "@copilotkit/react-core"
-import { CopilotChat } from "@copilotkit/react-ui"
-import type { Parameter } from "@copilotkit/shared"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Settings } from "lucide-react"
-import { FoodOptionsCard } from "@/components/FoodOptionsCard"
-import { GoalReminderCard } from "@/components/GoalReminderCard"
-import { JarvisInput } from "@/components/JarvisInput"
-import { NudgePanel } from "@/components/NudgePanel"
-import { TrafficCard } from "@/components/TrafficCard"
-import { WeatherCard } from "@/components/WeatherCard"
-import { WorldStateFloater } from "@/components/WorldStateFloater"
-import { api, type Nudge } from "@/lib/api"
-import { getGpsPermissionState, pushSensors } from "@/lib/sensors"
+'use client'
 
-function formatTime(value?: unknown) {
-  if (typeof value !== "string" || !value) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date)
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useRouter } from 'next/navigation'
+import { NudgePanel } from '@/components/NudgePanel'
+import { VoiceMode } from '@/components/VoiceMode'
+import { TimerWidget } from '@/components/TimerWidget'
+import { api } from '@/lib/api'
+import { collectSensors } from '@/lib/sensors'
+import { supabase } from '@/lib/supabase'
+import type { Nudge, WorldState } from '@/types'
+import { Send, Mic } from 'lucide-react'
+
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
 }
 
-function formatTemp(value?: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null
-  return `${Math.round(value)}°C`
-}
+const JARVIS_URL = process.env.NEXT_PUBLIC_JARVIS_URL || 'http://localhost:8000'
 
-function formatPercent(value?: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null
-  return `${Math.round(value)}%`
-}
-
-// For values stored as fractions (0-1) instead of percentages (0-100)
-function formatFraction(value?: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null
-  return `${Math.round(value * 100)}%`
-}
-
-function StatusChip(props: { label: string; value?: string | null }) {
-  if (!props.value) return null
-  return (
-    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white/80">
-      <span className="text-white/50">{props.label}</span>
-      <span className="font-medium text-white/90">{props.value}</span>
-    </div>
-  )
-}
-
-function JARVISInner({
-  devConsoleOpen: _devConsoleOpen,
-}: {
-  devConsoleOpen: boolean
-}) {
+export default function HomePage() {
+  const router = useRouter()
   const [panelOpen, setPanelOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [worldStateOpen, setWorldStateOpen] = useState(false)
-  const [speechEnabled, setSpeechEnabled] = useState(true)
   const [nudges, setNudges] = useState<Nudge[]>([])
-  const [goals, setGoals] = useState<any[]>([])
-  const [worldState, setWorldState] = useState<Record<string, unknown>>({})
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const [gpsGranted, setGpsGranted] = useState<boolean | null>(null)
-  const [locRequesting, setLocRequesting] = useState(false)
-  const [chatStarted, setChatStarted] = useState(false)
-  const settingsRef = useRef<HTMLDivElement>(null)
-  const spokenUpToRef = useRef<Record<string, number>>({})
-  const speechUnlockedRef = useRef(false)
+  const [worldState, setWorldState] = useState<WorldState | null>(null)
+  const [voiceActive, setVoiceActive] = useState(false)
+  const [userToken, setUserToken] = useState<string | null>(null)
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [streaming, setStreaming] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("jarvis_speech_enabled")
-      if (stored === "0") setSpeechEnabled(false)
-      if (stored === "1") setSpeechEnabled(true)
-    } catch {}
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("jarvis_speech_enabled", speechEnabled ? "1" : "0")
-    } catch {}
-  }, [speechEnabled])
-
-  const unlockSpeech = useCallback(() => {
-    if (speechUnlockedRef.current) return
-    try {
-      if (!("speechSynthesis" in window)) return
-      const u = new SpeechSynthesisUtterance(" ")
-      u.volume = 0
-      window.speechSynthesis.speak(u)
-      speechUnlockedRef.current = true
-    } catch {}
-  }, [])
-
-  useEffect(() => {
-    if (!speechEnabled) return
-    const handler = () => {
-      unlockSpeech()
-      window.removeEventListener("pointerdown", handler, true)
-    }
-    window.addEventListener("pointerdown", handler, true)
-    return () => window.removeEventListener("pointerdown", handler, true)
-  }, [speechEnabled, unlockSpeech])
-
-  // Auto-speak assistant messages — streams sentence-by-sentence while generating,
-  // then speaks any remaining text when done.
-  const { messages: chatMessages, isLoading } = useCopilotChatInternal()
-  const prevLoadingRef = useRef(false)
-  useEffect(() => {
-    if (!speechEnabled) return
-    if (!("speechSynthesis" in window)) return
-    const wasLoading = prevLoadingRef.current
-    prevLoadingRef.current = isLoading
-
-    // New request starting — cancel previous speech
-    if (!wasLoading && isLoading) {
-      window.speechSynthesis.cancel()
-      return
-    }
-
-    const msgs = Array.isArray(chatMessages) ? chatMessages : []
-    const lastAssistant = [...msgs].reverse().find((m: any) => m.role === "assistant")
-    if (!lastAssistant) return
-
-    const id = (lastAssistant as any).id ?? `msg-${msgs.length}`
-    const content = (lastAssistant as any).content
-    const fullText =
-      typeof content === "string"
-        ? content
-        : Array.isArray(content)
-          ? content.filter((c: any) => c.type === "text").map((c: any) => c.text ?? "").join(" ")
-          : ""
-    if (!fullText.trim()) return
-
-    const alreadySpoken = spokenUpToRef.current[id] ?? 0
-    const newText = fullText.slice(alreadySpoken)
-    if (!newText.trim()) return
-
-    let toSpeak: string
-    if (isLoading) {
-      // During streaming: only speak at sentence boundaries to minimise latency
-      const m = newText.match(/^([\s\S]*?[.!?])[\s]/)
-      if (!m) return
-      toSpeak = m[1]
-    } else {
-      // Generation done — speak whatever is left
-      toSpeak = newText
-    }
-
-    if (!speechUnlockedRef.current) return
-
-    spokenUpToRef.current[id] = alreadySpoken + toSpeak.length
-    const utterance = new SpeechSynthesisUtterance(toSpeak)
-    utterance.rate = 1.05
-    window.speechSynthesis.speak(utterance)
-  }, [isLoading, chatMessages, speechEnabled])
-
-  // Close settings dropdown on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-        setSettingsOpen(false)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) {
+        router.push('/login')
+      } else {
+        setUserToken(session.access_token)
       }
-    }
-    if (settingsOpen) document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [settingsOpen])
-
-  const BACKEND = process.env.NEXT_PUBLIC_JARVIS_URL || "http://localhost:8000"
-
-  const refreshWorldState = useCallback(async () => {
-    try {
-      const ws = await api.worldState()
-      setWorldState(ws)
-      setLastUpdated(new Date())
-    } catch {}
-  }, [])
-
-  const requestLocation = useCallback(async () => {
-    setLocRequesting(true)
-    try {
-      const perm = await getGpsPermissionState()
-      if (perm === "denied") {
-        alert(
-          "Location permission is blocked for this site. Enable Location for this site in your browser settings, then try again.",
-        )
-        return
-      }
-      const res = await pushSensors(BACKEND, { allowGpsPrompt: true, gpsTimeoutMs: 20000 })
-      setGpsGranted(res.gpsAvailable)
-      await refreshWorldState()
-      if (!res.gpsAvailable) {
-        alert("Could not get GPS fix yet. If you allowed Location, try again outdoors or wait a few seconds.")
-      }
-    } finally {
-      setLocRequesting(false)
-    }
-  }, [BACKEND, refreshWorldState])
-
-  // Push sensors then immediately refresh world state
-  useEffect(() => {
-    const push = async () => {
-      const res = await pushSensors(BACKEND, { allowGpsPrompt: false })
-      setGpsGranted(res.gpsAvailable)
-      await refreshWorldState()
-    }
-    push()
-    const interval = setInterval(push, 30 * 60_000) // 30 min
-    return () => clearInterval(interval)
-  }, [BACKEND, refreshWorldState])
-
-  // Check GPS permission on mount
-  useEffect(() => {
-    getGpsPermissionState().then((state) => {
-      if (state === "granted") setGpsGranted(true)
-      else if (state === "denied") setGpsGranted(false)
     })
-  }, [])
 
-  // Poll nudges — no auto-open (just badge count)
-  const refreshNudges = useCallback(async () => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session) {
+        router.push('/login')
+      } else {
+        setUserToken(session.access_token)
+      }
+    })
+
+    return () => subscription.unsubscribe()
+  }, [router])
+
+  const refreshNudges = useCallback(async (token: string) => {
     try {
-      const list = await api.nudges.list()
-      setNudges(list)
-    } catch {}
+      const res = await fetch(`${JARVIS_URL}/nudges`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (res.ok) setNudges(await res.json())
+    } catch (_) {}
   }, [])
 
-  useEffect(() => {
-    refreshNudges()
-    const interval = setInterval(refreshNudges, 30 * 60_000)
-    return () => clearInterval(interval)
+  const refreshContext = useCallback(async (token: string) => {
+    try {
+      const sensors = await collectSensors()
+      console.log('[sensors]', sensors)
+      console.log('[context] posting with token:', !!token)
+      const res = await fetch(`${JARVIS_URL}/context/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(sensors),
+      })
+      console.log('[context] response status:', res.status)
+      if (res.ok) {
+        const stateRes = await fetch(`${JARVIS_URL}/world-state`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (stateRes.ok) setWorldState(await stateRes.json())
+      }
+      await refreshNudges(token)
+    } catch (e) {
+      console.error('[context] error:', e)
+    }
   }, [refreshNudges])
 
-  // Poll world state (lightweight for header chips)
+  // Only run context refresh AFTER token is available
   useEffect(() => {
-    const interval = setInterval(refreshWorldState, 5 * 60_000)
+    if (!userToken) return
+    refreshContext(userToken)
+    const interval = setInterval(() => refreshContext(userToken), 30 * 60 * 1000)
     return () => clearInterval(interval)
-  }, [refreshWorldState])
+  }, [userToken, refreshContext])
 
-  // Persona injected as context because CopilotKit 1.57 BuiltInAgent reads input.context,
-  // not the CopilotChat instructions prop, when building the system prompt.
-  useCopilotReadable({
-    description: "AI assistant identity — follow these instructions at all times",
-    value:
-      "You are JARVIS, a proactive personal AI assistant. Your name is JARVIS — never call yourself 'Assistant'. " +
-      "The human you are talking to is Clifford. When asked your name say 'I am JARVIS'. " +
-      "When asked who the user is, say 'You are Clifford'. " +
-      "Use the world-state context proactively. When showing weather/traffic/food data, call the matching UI card action.",
-  })
-
-  useCopilotReadable({
-    description:
-      "Current world state: time, location, weather, device, cognitive load, biological signals, nearby places, goals.",
-    value: worldState,
-  })
-
-  useCopilotReadable({
-    description: "Pending proactive nudges waiting for user attention.",
-    value: nudges,
-  })
-
-  // Generative UI cards
-  useCopilotAction({
-    name: "weatherCard",
-    description: "Show current weather conditions as a visual card",
-    parameters: [
-      { name: "condition", type: "string", required: true },
-      { name: "temp_c", type: "number", required: true },
-      { name: "feels_like_c", type: "number", required: true },
-      { name: "humidity_pct", type: "number", required: true },
-      { name: "rain_prob_1h", type: "number", required: true },
-      { name: "city", type: "string", required: true },
-    ] satisfies Parameter[],
-    handler: async () => "ok",
-    render: ({ status, args }) => (status === "inProgress" ? <></> : <WeatherCard {...(args as any)} />),
-  })
-
-  useCopilotAction({
-    name: "trafficCard",
-    description: "Show traffic conditions and ETA for a route",
-    parameters: [
-      { name: "congestion", type: "string", required: true },
-      { name: "eta_now_minutes", type: "number", required: true },
-      { name: "usual_eta_minutes", type: "number", required: true },
-      { name: "delay_minutes", type: "number", required: true },
-      { name: "route_label", type: "string", required: true },
-    ] satisfies Parameter[],
-    handler: async () => "ok",
-    render: ({ status, args }) => (status === "inProgress" ? <></> : <TrafficCard {...(args as any)} />),
-  })
-
-  useCopilotAction({
-    name: "foodOptionsCard",
-    description: "Show nearby food options when user is hungry",
-    parameters: [
-      { name: "reason", type: "string", required: true },
-      { name: "time_context", type: "string", required: true },
-      {
-        name: "options_json",
-        type: "string",
-        required: true,
-        description:
-          'JSON array of food options, e.g. [{"name":"KFC","distance_m":500,"estimated_delivery_min":20,"open_until":"22:00"}]',
+  const syncLocation = useCallback(() => {
+    if (!userToken) return
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const payload = { lat: pos.coords.latitude, lng: pos.coords.longitude, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+        console.log('[sync] got coords:', payload)
+        const res = await fetch(`${JARVIS_URL}/context/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
+          body: JSON.stringify(payload),
+        })
+        console.log('[sync] response:', res.status)
+        if (res.ok) {
+          const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${userToken}` } })
+          if (stateRes.ok) setWorldState(await stateRes.json())
+          alert('Location synced!')
+        } else {
+          alert(`Sync failed: ${res.status}`)
+        }
       },
-    ] satisfies Parameter[],
-    handler: async () => "ok",
-    render: ({ status, args }) => {
-      if (status === "inProgress") return <></>
-      let options: any[] = []
-      try { options = JSON.parse((args as any).options_json ?? "[]") } catch {}
-      return <FoodOptionsCard reason={(args as any).reason} time_context={(args as any).time_context} options={options} />
-    },
-  })
+      (err) => {
+        console.error('[sync] geolocation error:', err)
+        alert(`Location denied: ${err.message}. Sending Lagos default.`)
+        fetch(`${JARVIS_URL}/context/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
+          body: JSON.stringify({ lat: 6.5244, lng: 3.3792, timezone: 'Africa/Lagos' }),
+        }).then(r => console.log('[sync] fallback response:', r.status))
+      }
+    )
+  }, [userToken])
 
-  useCopilotAction({
-    name: "goalReminderCard",
-    description: "Remind user about a stale or urgent goal",
-    parameters: [
-      { name: "goal_name", type: "string", required: true },
-      { name: "days_stale", type: "number", required: true },
-      { name: "urgency", type: "string", required: true },
-      { name: "suggested_action", type: "string", required: true },
-    ] satisfies Parameter[],
-    handler: async () => "ok",
-    render: ({ status, args }) => (status === "inProgress" ? <></> : <GoalReminderCard {...(args as any)} />),
-  })
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
-  useCopilotAction({
-    name: "openNudgePanel",
-    description: "Open the proactive nudge panel on the right side",
-    parameters: [{ name: "reason", type: "string", required: false }] satisfies Parameter[],
-    handler: async () => {
-      setPanelOpen(true)
-      return "Panel opened"
-    },
-  })
+  const sendMessage = useCallback(async () => {
+    if (!input.trim() || streaming || !userToken) return
 
-  useCopilotAction({
-    name: "closeNudgePanel",
-    description: "Close the nudge panel",
-    parameters: [] satisfies Parameter[],
-    handler: async () => {
-      setPanelOpen(false)
-      return "Panel closed"
-    },
-  })
+    const userMsg: Message = { role: 'user', content: input.trim() }
+    setMessages(prev => [...prev, userMsg])
+    setInput('')
+    setStreaming(true)
 
-  const handleDismissNudge = async (id: string) => {
+    const allMessages = [...messages, userMsg].map(m => ({
+      role: m.role,
+      content: m.content,
+    }))
+
     try {
-      await api.nudges.dismiss(id)
-    } catch {}
-    setNudges((curr) => curr.filter((n) => n.id !== id))
+      const res = await fetch(`${JARVIS_URL}/agent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ messages: allMessages }),
+      })
+
+      if (!res.ok || !res.body) throw new Error('Agent error')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let assistantContent = ''
+
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+        for (const line of lines) {
+          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.content) {
+                assistantContent += data.content
+                setMessages(prev => {
+                  const updated = [...prev]
+                  updated[updated.length - 1] = { role: 'assistant', content: assistantContent }
+                  return updated
+                })
+              }
+            } catch (_) {}
+          }
+        }
+      }
+      // Handle timer marker, strip it from displayed message
+      if (assistantContent) {
+        handleTimerFromResponse(assistantContent)
+        const cleaned = assistantContent.replace(/\s*\[TIMER:[^\]]+\]/g, '').trim()
+        if (cleaned !== assistantContent) {
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = { role: 'assistant', content: cleaned }
+            return updated
+          })
+        }
+      }
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again.' }])
+    } finally {
+      setStreaming(false)
+    }
+  }, [input, streaming, userToken, messages, handleTimerFromResponse])
+
+  const handleTimerFromResponse = useCallback((response: string) => {
+    const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
+    if (timerMatch && (window as any).__jarvisAddTimer) {
+      const minutes = parseFloat(timerMatch[1])
+      const label = timerMatch[2]
+      ;(window as any).__jarvisAddTimer(label, minutes * 60 * 1000)
+    }
+  }, [])
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendMessage()
+    }
   }
 
-  const WrappedInput = useCallback(
-    (props: any) => (
-      <JarvisInput
-        {...props}
-        onSend={(text: string) => {
-          setChatStarted(true)
-          props.onSend?.(text)
-        }}
-      />
-    ),
-    [],
-  )
+  const worldContext = worldState
+    ? `Time: ${worldState.temporal?.day_of_week} ${worldState.temporal?.time_of_day}. Location: ${worldState.location?.city}. Weather: ${worldState.environment?.weather?.temp_c}°C ${worldState.environment?.weather?.condition}.`
+    : 'No world context available yet.'
 
-  const greeting = useMemo(() => {
-    const hour = new Date().getHours()
-    const period = hour < 5 ? "night" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening"
-    const ws = worldState as any
-    const weatherDesc = ws?.environment?.weather?.description ?? ws?.environment?.weather?.condition
-    const temp = ws?.environment?.weather?.temp_c ?? ws?.environment?.weather?.temperature_c
-    const city = ws?.location?.city ?? ws?.location?.city_name ?? ws?.location?.town
-
-    let msg = `Good ${period}, Clifford.`
-    if (typeof weatherDesc === "string") {
-      msg += ` It's ${weatherDesc.toLowerCase()}`
-      if (typeof temp === "number") msg += ` at ${Math.round(temp)}°C`
-      if (typeof city === "string") msg += ` in ${city}`
-      msg += "."
-    }
-    return msg
-  }, [worldState])
-
-  const ws = worldState as any
-  const city =
-    ws?.location?.city ??
-    ws?.location?.city_name ??
-    ws?.location?.town ??
-    ws?.location?.district ??
-    null
-  const state = ws?.location?.state ?? null
-  const country = ws?.location?.country ?? null
-  const localTime =
-    formatTime(ws?.temporal?.timestamp) ??
-    formatTime(ws?.temporal?.iso) ??
-    formatTime(ws?.temporal?.local_time) ??
-    null
-  // Compute UTC offset from the browser's own clock — accurate regardless of VPN/IP routing
-  const browserTzOffset = useMemo(() => {
-    const offsetMin = -new Date().getTimezoneOffset()
-    const sign = offsetMin >= 0 ? "+" : "-"
-    const h = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, "0")
-    const m = String(Math.abs(offsetMin) % 60).padStart(2, "0")
-    return `${sign}${h}:${m}`
-  }, [])
-  const weatherDesc = ws?.environment?.weather?.description ?? ws?.environment?.weather?.condition ?? null
-  const temp = formatTemp(ws?.environment?.weather?.temp_c ?? ws?.environment?.weather?.temperature_c)
-  const feelsLike = formatTemp(ws?.environment?.weather?.feels_like_c)
-  const humidity = formatPercent(ws?.environment?.weather?.humidity_pct)
-  // forecast_1h_rain_prob is stored as 0-1 fraction from Open-Meteo
-  const rainProb =
-    formatFraction(ws?.environment?.weather?.forecast_1h_rain_prob) ??
-    formatPercent(ws?.environment?.weather?.rain_prob_1h)
-  const windSpeedKmh = ws?.environment?.weather?.wind_speed_kmh
-  const windDir = ws?.environment?.weather?.wind_direction
-  const wind =
-    typeof windSpeedKmh === "number"
-      ? `${Math.round(windSpeedKmh)} km/h${typeof windDir === "string" ? ` ${windDir}` : ""}`
-      : null
-  // Just the number — chip label already says "UV"
-  const uvIndex =
-    typeof ws?.environment?.weather?.uv_index === "number"
-      ? String(Math.round(ws.environment.weather.uv_index))
-      : null
-  // Show AQI score + category when available ("23 · good"), otherwise category only
-  const aqiNum = ws?.environment?.air_quality?.aqi
-  const aqiCat = typeof ws?.environment?.air_quality?.category === "string"
-    ? ws.environment.air_quality.category.replace(/_/g, " ")
-    : null
-  const aqiLabel = typeof aqiNum === "number"
-    ? `${Math.round(aqiNum)} · ${aqiCat ?? ""}`
-    : aqiCat
-  const battery = formatPercent(ws?.device?.battery_pct)
-  const isCharging = ws?.device?.charging === true
-  const batteryDisplay = battery ? (isCharging ? `${battery} charging` : battery) : null
+  const weather = worldState?.environment?.weather
+  const location = worldState?.location
 
   return (
-    <div className="h-[100dvh] min-h-[100dvh] overflow-hidden bg-[#0a0f1a] text-slate-100">
-      <div className="mx-auto flex h-full max-w-5xl flex-col">
-        <header className="flex items-center justify-between px-4 sm:px-5 pt-[calc(1rem+env(safe-area-inset-top))] pb-3 sm:py-4">
-          <div className="min-w-0">
-            <div className="flex items-baseline gap-3">
-              <h1 className="text-sm font-semibold tracking-wide text-white">JARVIS</h1>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <StatusChip label="Time" value={localTime} />
-              {gpsGranted === false || (typeof city === "string" && city === "Unknown") ? (
-                <button
-                  onClick={requestLocation}
-                  disabled={locRequesting}
-                  className="flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/[0.08] px-3 py-1.5 text-xs text-amber-400/90 hover:bg-amber-500/[0.15] transition-colors"
-                  title="Allow location — if already denied, reset permission in browser settings (lock icon in address bar)"
-                >
-                  <span className="text-amber-500/60">Loc</span>
-                  <span>{locRequesting ? "Requesting..." : "Allow location"}</span>
-                </button>
-              ) : (
-                <>
-                  <StatusChip label="City" value={typeof city === "string" && city !== "Unknown" ? city : null} />
-                  <StatusChip label="State" value={typeof state === "string" && state !== "Unknown" ? state : null} />
-                  <StatusChip label="Country" value={typeof country === "string" && country !== "Unknown" ? country : null} />
-                </>
-              )}
-              <StatusChip label="UTC" value={browserTzOffset} />
-              <StatusChip label="Weather" value={typeof weatherDesc === "string" ? weatherDesc.replace(/_/g, " ") : null} />
-              <StatusChip label="Temp" value={temp} />
-              <StatusChip label="Feels" value={feelsLike} />
-              <StatusChip label="Humidity" value={humidity} />
-              <StatusChip label="Rain 1h" value={rainProb} />
-              <StatusChip label="Wind" value={wind} />
-              <StatusChip label="UV" value={uvIndex} />
-              <StatusChip label="Air" value={aqiLabel} />
-              <StatusChip label="Battery" value={batteryDisplay} />
-            </div>
+    <div className="flex h-screen bg-jarvis-bg text-jarvis-text overflow-hidden">
+      {/* Main chat area */}
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Header */}
+        <header className="flex items-center justify-between px-4 py-3 border-b border-jarvis-border bg-jarvis-surface">
+          <div className="flex items-center gap-3">
+            <span className="text-lg font-semibold tracking-tight">JARVIS</span>
+            <span className="text-xs text-jarvis-muted">v3</span>
           </div>
-          <div className="flex flex-shrink-0 items-center gap-2">
+          <div className="flex items-center gap-3 text-xs text-jarvis-muted">
+            {location?.city && <span>{location.city}</span>}
+            {weather?.temp_c != null && (
+              <span>{Math.round(weather.temp_c)}°C · {weather.condition}</span>
+            )}
             <button
-              onClick={() => setPanelOpen((v) => !v)}
-              className="rounded-full border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-white/70 hover:bg-white/[0.05]"
+              onClick={syncLocation}
+              className="px-2 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors"
+              title="Sync location"
             >
-              Nudges{nudges.length > 0 && ` (${nudges.length})`}
+              ⌖ Sync
             </button>
-            {/* Settings dropdown */}
-            <div ref={settingsRef} className="relative">
-              <button
-                onClick={() => setSettingsOpen((v) => !v)}
-                className="rounded-full border border-white/10 bg-white/[0.02] p-2 text-white/70 hover:bg-white/[0.05]"
-                title="Settings"
-              >
-                <Settings size={14} />
-              </button>
-              {settingsOpen && (
-                <div className="absolute right-0 top-full mt-2 z-50 w-44 rounded-xl border border-white/10 bg-[#0d1424] py-1 shadow-xl">
-                  <button
-                    onClick={() => setSpeechEnabled((v) => !v)}
-                    className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
-                  >
-                    Speech: {speechEnabled ? "On" : "Off"}
-                  </button>
-                  {speechEnabled && (
-                    <button
-                      onClick={() => {
-                        unlockSpeech()
-                        const u = new SpeechSynthesisUtterance("Audio enabled.")
-                        u.rate = 1.05
-                        window.speechSynthesis.cancel()
-                        window.speechSynthesis.speak(u)
-                        setSettingsOpen(false)
-                      }}
-                      className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
-                    >
-                      Test audio
-                    </button>
-                  )}
-                  <button
-                    onClick={() => { setWorldStateOpen((v) => !v); setSettingsOpen(false) }}
-                    className="w-full px-4 py-2 text-left text-xs text-white/70 hover:bg-white/[0.05]"
-                  >
-                    {worldStateOpen ? "Hide world state" : "World state"}
-                  </button>
-                </div>
+            <button
+              onClick={() => setPanelOpen(!panelOpen)}
+              className="relative px-2 py-1 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors"
+            >
+              Nudges
+              {nudges.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+                  {nudges.length}
+                </span>
               )}
-            </div>
+            </button>
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden px-3 sm:px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
-          <div className="h-full rounded-2xl border border-white/10 bg-white/[0.02]">
-            <div className="relative mx-auto h-full w-full max-w-3xl">
-              {!chatStarted && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center pb-20">
-                  <p className="px-6 text-center text-2xl font-semibold leading-snug text-white/80">
-                    {greeting}
-                  </p>
-                </div>
-              )}
-              <CopilotChat
-                className="jarvis-chat h-full"
-                instructions="You are JARVIS, an AI assistant. You are NOT Clifford — Clifford is the human user talking to you. Your name is JARVIS. Always refer to yourself as JARVIS. When asked your name, say 'I am JARVIS'. The user's name is Clifford. You have access to Clifford's real-time world state including location, weather, device battery, and goals — use this context proactively. When showing weather, traffic, or food data, use the appropriate UI card actions (weatherCard, trafficCard, foodOptionsCard). Be concise, specific, and helpful."
-                labels={{
-                  title: "JARVIS",
-                  initial: "",
-                  placeholder: "Message JARVIS…",
+        {/* Chat or Voice */}
+        <div className="flex-1 overflow-hidden relative flex flex-col">
+          {voiceActive && userToken ? (
+            <div className="flex flex-col items-center justify-center h-full gap-6">
+              <p className="text-jarvis-muted text-sm">Voice mode active</p>
+              <VoiceMode
+                worldStateContext={worldContext}
+                userToken={userToken}
+                onTranscript={(text, role) => {
+                  setMessages(prev => [...prev, { role, content: text }])
                 }}
-                Input={WrappedInput}
               />
+              <button
+                onClick={() => setVoiceActive(false)}
+                className="text-xs text-jarvis-muted hover:text-jarvis-text transition-colors mt-4"
+              >
+                Switch to text
+              </button>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+                {messages.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-center gap-3">
+                    <p className="text-2xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
+                    <p className="text-jarvis-muted text-sm">What's on your mind?</p>
+                  </div>
+                )}
+                {messages.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                      msg.role === 'user'
+                        ? 'bg-jarvis-accent text-white rounded-br-sm'
+                        : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
+                    }`}>
+                      {msg.content || (streaming && i === messages.length - 1 ? '▋' : '')}
+                    </div>
+                  </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="px-4 py-3 border-t border-jarvis-border bg-jarvis-surface">
+                <div className="flex items-end gap-2">
+                  <textarea
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Message JARVIS..."
+                    rows={1}
+                    className="flex-1 resize-none bg-jarvis-bg border border-jarvis-border rounded-xl px-4 py-2.5 text-sm text-jarvis-text placeholder:text-jarvis-muted focus:outline-none focus:border-jarvis-accent transition-colors"
+                    style={{ maxHeight: '120px' }}
+                  />
+                  {userToken && (
+                    <button
+                      onClick={() => setVoiceActive(true)}
+                      className="p-2.5 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent"
+                      title="Voice mode"
+                    >
+                      <Mic size={18} />
+                    </button>
+                  )}
+                  <button
+                    onClick={sendMessage}
+                    disabled={!input.trim() || streaming || !userToken}
+                    className="p-2.5 rounded-xl bg-jarvis-accent hover:bg-jarvis-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-white"
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
+                {!userToken && (
+                  <p className="text-xs text-jarvis-muted mt-1 text-center">
+                    <a href="/login" className="text-jarvis-accent hover:underline">Sign in</a> to chat with JARVIS
+                  </p>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {panelOpen && (
-        <>
-          <button
-            aria-label="Close nudges panel"
-            className="fixed inset-0 z-40 cursor-default bg-black/50"
-            onClick={() => setPanelOpen(false)}
-          />
-          <NudgePanel
-            nudges={nudges}
-            goals={goals}
-            onClose={() => setPanelOpen(false)}
-            onGoalUpdate={setGoals}
-            onDismissNudge={handleDismissNudge}
-          />
-        </>
-      )}
+      <TimerWidget />
 
-      {worldStateOpen && (
-        <WorldStateFloater
-          worldState={worldState}
-          lastUpdated={lastUpdated}
-          onRefresh={refreshWorldState}
-          onClose={() => setWorldStateOpen(false)}
+      {/* Nudge panel */}
+      {panelOpen && userToken && (
+        <NudgePanel
+          token={userToken}
+          onClose={() => setPanelOpen(false)}
+          onPersonClick={(personId) => {
+            window.location.href = `/people/${personId}`
+          }}
         />
       )}
     </div>
   )
 }
 
-export default function JARVISPage() {
-  const [devConsoleOpen] = useState(false)
-
-  return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
-      <JARVISInner devConsoleOpen={devConsoleOpen} />
-    </CopilotKit>
-  )
+function getTimeOfDay() {
+  const h = new Date().getHours()
+  if (h < 12) return 'morning'
+  if (h < 17) return 'afternoon'
+  return 'evening'
 }
