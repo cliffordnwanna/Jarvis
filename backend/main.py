@@ -50,7 +50,48 @@ async def startup_event():
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 from backend.agent import build_graph, BASE_SYSTEM_PROMPT
+from openai import AsyncOpenAI
 import json
+
+_openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+MAX_RECENT = 10
+SUMMARY_THRESHOLD = 20
+
+
+async def prepare_messages(messages: list) -> list:
+    if len(messages) <= MAX_RECENT:
+        return messages
+
+    old = messages[:-MAX_RECENT]
+    recent = messages[-MAX_RECENT:]
+
+    if len(messages) <= SUMMARY_THRESHOLD:
+        return messages  # between 10-20, send all
+
+    old_text = "\n".join(
+        f"{m['role'].upper()}: {m['content'][:300]}" for m in old
+    )
+    try:
+        res = await _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Summarise this conversation history in 3-5 bullet points. "
+                    "Focus on facts, decisions, names, and context useful later:\n\n"
+                    + old_text
+                )
+            }],
+            max_tokens=300,
+        )
+        summary = res.choices[0].message.content
+        print(f"[context] summarised {len(old)} older messages into {len(summary)} chars")
+        return [{"role": "user", "content": f"[Earlier conversation summary:\n{summary}]"}] + recent
+    except Exception as e:
+        print(f"[context] summarisation failed: {e}")
+        return recent
+
 
 def get_graph(system_prompt: str = None):
     return build_graph(system_prompt or BASE_SYSTEM_PROMPT)
@@ -59,7 +100,8 @@ def get_graph(system_prompt: str = None):
 @app.post("/agent")
 async def agent_endpoint(request: Request, user_id: str = Depends(get_current_user)):
     body = await request.json()
-    messages = body.get("messages", [])
+    raw_messages = body.get("messages", [])
+    messages = await prepare_messages(raw_messages)
 
     print(f"[agent] called by user={user_id}, last_message={messages[-1] if messages else 'none'}")
 
