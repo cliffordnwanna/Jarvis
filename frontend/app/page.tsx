@@ -236,7 +236,6 @@ export default function HomePage() {
       <header className="flex items-center justify-between px-3 py-2 border-b border-jarvis-border bg-jarvis-surface shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-base font-semibold tracking-tight">JARVIS</span>
-          <span className="text-xs text-jarvis-muted hidden sm:inline">v3</span>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-jarvis-muted">
           <button
@@ -261,19 +260,87 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Status bar — always visible below header */}
-      {worldState && (
-        <div className="flex items-center gap-2 text-xs text-gray-400 px-3 py-1.5 bg-gray-900/50 border-b border-white/5 shrink-0 overflow-x-auto whitespace-nowrap">
-          <span>📍 {location?.district ? `${location.district}, ${location.city}` : location?.city}</span>
-          {weather?.temp_c != null && <><span className="text-gray-600">·</span><span>🌡 {Math.round(weather.temp_c)}°C</span></>}
-          {(weather?.description || weather?.condition) && (
-            <><span className="text-gray-600">·</span><span>{weather.description || weather.condition}</span></>
-          )}
-          {(weather?.precipitation_mm ?? 0) > 0.1 && (
-            <span className="text-blue-400">· 🌧 Raining</span>
-          )}
-        </div>
-      )}
+      {/* Rich context bar */}
+      {worldState && (() => {
+        const wb = worldState.environment?.weather
+        const tmp = worldState.temporal
+        const loc = worldState.location
+
+        const getWeatherIcon = () => {
+          const cond = wb?.condition || ''
+          const isDay = wb?.is_day ?? true
+          const precip = wb?.precipitation_mm || 0
+          if (precip > 0.1 || cond.includes('rain') || cond.includes('drizzle')) return '🌧'
+          if (cond.includes('thunder')) return '⛈'
+          if (cond.includes('snow')) return '❄'
+          if (cond.includes('fog') || cond.includes('mist')) return '🌫'
+          if (cond.includes('partly_cloudy') || (cond.includes('cloud') && cond.includes('partly'))) return isDay ? '⛅' : '🌙'
+          if (cond.includes('cloud') || cond.includes('overcast')) return '☁'
+          if (!isDay) return '🌙'
+          if (cond.includes('clear') || cond.includes('sunny')) return '☀'
+          return isDay ? '🌤' : '🌙'
+        }
+
+        const rain1h = wb?.forecast_1h_rain_prob || 0
+        const isRaining = (wb?.precipitation_mm || 0) > 0.1
+        const district = loc?.district
+        const city = loc?.city
+        const locationStr = district && district !== city
+          ? `${district}, ${city}`
+          : city || 'Locating...'
+
+        return (
+          <div className="flex items-center gap-0 text-xs overflow-x-auto whitespace-nowrap border-b border-white/5 bg-gray-950/80 backdrop-blur-sm shrink-0">
+            <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+              <span className="text-blue-400">📍</span>
+              <span className="text-gray-300">{locationStr}</span>
+            </div>
+            <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+              <span>{getWeatherIcon()}</span>
+              <span className="text-gray-300">{wb?.temp_c}°C</span>
+            </div>
+            {!isRaining && rain1h > 0.4 && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>🌧</span>
+                <span className="text-blue-400">{Math.round(rain1h * 100)}% soon</span>
+              </div>
+            )}
+            {isRaining && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>🌧</span>
+                <span className="text-blue-400">Raining now</span>
+              </div>
+            )}
+            {(wb?.uv_index ?? 0) >= 6 && wb?.is_day && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>🕶</span>
+                <span className="text-yellow-400">UV {wb.uv_index}</span>
+              </div>
+            )}
+            {(wb?.humidity_pct ?? 0) >= 75 && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>💧</span>
+                <span className="text-gray-400">{wb?.humidity_pct}%</span>
+              </div>
+            )}
+            {(wb?.wind_speed_kmh ?? 0) >= 20 && (
+              <div className="flex items-center gap-1 px-3 py-2 border-r border-white/5">
+                <span>💨</span>
+                <span className="text-gray-400">{wb?.wind_speed_kmh} km/h</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1 px-3 py-2 ml-auto">
+              <span className="text-gray-500">
+                {tmp?.timestamp
+                  ? new Date(tmp.timestamp).toLocaleTimeString('en-US', {
+                      hour: '2-digit', minute: '2-digit', hour12: true,
+                    })
+                  : ''}
+              </span>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Chat or Voice */}
       <div className="flex-1 overflow-hidden flex flex-col min-h-0">

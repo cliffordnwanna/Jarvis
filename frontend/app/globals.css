@@ -43,6 +43,11 @@ p, span, div {
   color: #e2e8f0 !important;
 }
 
+/* Prevent iOS Safari zoom on input focus */
+input, textarea, select {
+  font-size: 16px !important;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: #111118; }
