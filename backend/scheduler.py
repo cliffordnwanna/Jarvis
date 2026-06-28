@@ -331,6 +331,20 @@ async def morning_weather_briefing():
             logger.info(f"[scheduler] morning_briefing: nothing to report for {user_id}")
             continue
 
+        # Determine correct greeting from user's local time
+        user_tz_str = user.get("timezone") or "UTC"
+        try:
+            from zoneinfo import ZoneInfo
+            local_hour = datetime.now(ZoneInfo(user_tz_str)).hour
+        except Exception:
+            local_hour = now.hour
+        if local_hour < 12:
+            greeting = "Good morning"
+        elif local_hour < 17:
+            greeting = "Good afternoon"
+        else:
+            greeting = "Good evening"
+
         raw = " ".join(sections)
         try:
             res = await oai.chat.completions.create(
@@ -339,9 +353,9 @@ async def morning_weather_briefing():
                     {
                         "role": "system",
                         "content": (
-                            "You are JARVIS. Rewrite this morning briefing in 2-4 short natural sentences. "
-                            "Warm, direct, like a smart friend. No bullet points. No headers. "
-                            "Keep all the facts. Start with 'Good morning.'"
+                            f"You are JARVIS. Rewrite this briefing in 2-4 short natural sentences. "
+                            f"Warm, direct, like a smart friend. No bullet points. No headers. "
+                            f"Keep all the facts. Start with '{greeting}.' (use exactly this greeting, not a different one)."
                         ),
                     },
                     {"role": "user", "content": raw},
@@ -351,7 +365,7 @@ async def morning_weather_briefing():
             final_message = res.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"[scheduler] morning_briefing GPT polish failed: {e}")
-            final_message = "Good morning. " + raw
+            final_message = f"{greeting}. " + raw
 
         try:
             db.table("nudge_history").insert({

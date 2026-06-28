@@ -17,6 +17,7 @@ interface NudgePanelProps {
 
 const NUDGE_ICONS: Record<string, React.ReactNode> = {
   weather: <CloudRain size={14} className="text-blue-400" />,
+  morning_briefing: <CloudRain size={14} className="text-green-400" />,
   calendar: <Calendar size={14} className="text-purple-400" />,
   goal: <Target size={14} className="text-blue-400" />,
   relationship_birthday: <Gift size={14} className="text-pink-400" />,
@@ -30,6 +31,14 @@ const PRIORITY_BORDER: Record<string, string> = {
   high: 'border-red-500/30',
   medium: 'border-yellow-500/20',
   low: 'border-white/5',
+}
+
+const NUDGE_TYPE_STYLE: Record<string, { border: string; bg: string; dot: string }> = {
+  morning_briefing: {
+    border: 'border-green-500/30',
+    bg: 'bg-green-500/5',
+    dot: 'bg-green-400',
+  },
 }
 
 export function NudgePanel({ token, onPersonClick, onGoalTouch, onClose }: NudgePanelProps) {
@@ -92,18 +101,22 @@ export function NudgePanel({ token, onPersonClick, onGoalTouch, onClose }: Nudge
             <p className="text-xs text-gray-700 mt-1">JARVIS will notify you when something needs attention.</p>
           </div>
         ) : (
-          nudges.map(nudge => (
+          nudges.map(nudge => {
+            const typeStyle = NUDGE_TYPE_STYLE[nudge.nudge_type]
+            const borderClass = typeStyle ? typeStyle.border : (PRIORITY_BORDER[nudge.priority] || 'border-white/5')
+            const bgClass = typeStyle ? typeStyle.bg : (nudge.priority === 'high' ? 'bg-red-500/5' : 'bg-white/[0.02]')
+            const dotColor = typeStyle ? typeStyle.dot : 'bg-red-500'
+            return (
             <div
               key={nudge.id}
               className={`
                 relative rounded-xl border p-3 transition-all duration-200
-                ${PRIORITY_BORDER[nudge.priority] || 'border-white/5'}
-                ${nudge.priority === 'high' ? 'bg-red-500/5' : 'bg-white/[0.02]'}
+                ${borderClass} ${bgClass}
                 ${dismissing.has(nudge.id) ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}
               `}
             >
-              {nudge.priority === 'high' && (
-                <div className="absolute top-2 left-2 w-1.5 h-1.5 rounded-full bg-red-500" />
+              {(nudge.priority === 'high' || typeStyle) && (
+                <div className={`absolute top-2 left-2 w-1.5 h-1.5 rounded-full ${dotColor}`} />
               )}
               <button
                 onClick={() => dismiss(nudge.id)}
@@ -138,7 +151,7 @@ export function NudgePanel({ token, onPersonClick, onGoalTouch, onClose }: Nudge
                 )}
               </div>
             </div>
-          ))
+          )})
         )}
       </div>
     </aside>
