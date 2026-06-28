@@ -173,16 +173,19 @@ async def add_person(
 
         if notes or job:
             note_content = notes or f"{name} works as {job}."
-            embedding = await embed_text(note_content)
-            note_row = {
-                "user_id": user_id,
-                "person_id": person_id,
-                "content": note_content,
-                "source": "agent",
-            }
-            if embedding:
-                note_row["embedding"] = embedding
-            db.table("relationship_notes").insert(note_row).execute()
+            try:
+                embedding = await embed_text(note_content)
+                note_row = {
+                    "user_id": user_id,
+                    "person_id": person_id,
+                    "content": note_content,
+                    "source": "chat_extraction",
+                }
+                if embedding:
+                    note_row["embedding"] = embedding
+                db.table("relationship_notes").insert(note_row).execute()
+            except Exception as e:
+                print(f"[add_person] note insert failed (non-fatal): {e}")
 
         print(f"[add_person] Added {name} (id={person_id})")
         return {"status": "added", "person_id": person_id, "name": name}
@@ -217,7 +220,7 @@ async def add_note_for_person(
             "user_id": user_id,
             "person_id": person["id"],
             "content": note,
-            "source": "agent",
+            "source": "chat_extraction",
         }
         if embedding:
             note_row["embedding"] = embedding

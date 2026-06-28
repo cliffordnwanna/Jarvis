@@ -72,12 +72,15 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
     world_state = await cache_get(user_id)
     if world_state:
         loc = world_state.get("location", {})
-        wx = world_state.get("weather", {})
-        t = world_state.get("time", {})
+        # world_state uses "temporal" key (from world_state.py build_world_state)
+        t = world_state.get("temporal", world_state.get("time", {}))
+        env = world_state.get("environment", {})
+        wx = env.get("weather", world_state.get("weather", {}))
         world_context = (
             f"CURRENT WORLD STATE (already fetched — do not call get_world_state):\n"
-            f"- Time: {t.get('day_of_week')} {t.get('hour', 0):02d}:{str(t.get('minute', 0)).zfill(2)}, {t.get('date')}\n"
-            f"- Location: {loc.get('city')}, {loc.get('country')}\n"
+            f"- Time: {t.get('day_of_week')} {t.get('hour', now_utc.hour):02d}:{str(t.get('minute', now_utc.minute)).zfill(2)}, {t.get('date', today_str)}\n"
+            f"- Time of day: {t.get('time_of_day', '')}\n"
+            f"- Location: {loc.get('city')}, {loc.get('area', '')}, {loc.get('country')}\n"
             f"- Weather: {wx.get('temp_c')}°C, {wx.get('condition')}, rain {wx.get('rain_probability_2h', 0)}%\n"
         )
     else:

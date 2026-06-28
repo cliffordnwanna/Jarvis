@@ -38,55 +38,62 @@ async def send_nudge(
 
 
 @tool
-async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant") -> list:
+async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 1500) -> list:
     """Find nearby places using Overpass API (OpenStreetMap) — completely free.
-    place_type options: restaurant, cafe, pharmacy, atm, fuel, hospital, supermarket, bank
+    place_type options: restaurant, cafe, pharmacy, atm, fuel, hospital, supermarket, bank, hotel
     """
-    osm_tags = {
-        "restaurant": "restaurant",
-        "cafe": "cafe",
-        "pharmacy": "pharmacy",
-        "atm": "atm",
-        "fuel": "fuel",
-        "hospital": "hospital",
-        "supermarket": "supermarket",
-        "bank": "bank",
+    type_map = {
+        "restaurant": ('amenity', 'restaurant'),
+        "cafe": ('amenity', 'cafe'),
+        "pharmacy": ('amenity', 'pharmacy'),
+        "atm": ('amenity', 'atm'),
+        "fuel": ('amenity', 'fuel'),
+        "hospital": ('amenity', 'hospital'),
+        "supermarket": ('shop', 'supermarket'),
+        "bank": ('amenity', 'bank'),
+        "hotel": ('tourism', 'hotel'),
+        "guest_house": ('tourism', 'guest_house'),
     }
-    amenity = osm_tags.get(place_type, "restaurant")
-    radius = 1000  # 1km
+    tag_key, tag_val = type_map.get(place_type.lower(), ('amenity', place_type))
 
-    query = f"""
-[out:json][timeout:10];
-node["amenity"="{amenity}"](around:{radius},{lat},{lng});
-out body 10;
-"""
+    query = f"""[out:json][timeout:15];
+(
+  node["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
+  way["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
+);
+out center 10;"""
 
-    async with httpx.AsyncClient() as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
                 "https://overpass-api.de/api/interpreter",
-                data=query,
-                timeout=10.0,
+                data={"data": query},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
+            if r.status_code != 200:
+                print(f"Overpass error: status {r.status_code}")
+                return []
             data = r.json()
-            places = []
+            results = []
             for el in data.get("elements", [])[:8]:
                 tags = el.get("tags", {})
-                name = tags.get("name")
-                if not name:
+                if not tags.get("name"):
                     continue
-                places.append({
-                    "name": name,
-                    "type": amenity,
-                    "lat": el.get("lat"),
-                    "lng": el.get("lon"),
-                    "cuisine": tags.get("cuisine", ""),
+                el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
+                el_lng = el.get("lon") or (el.get("center") or {}).get("lon")
+                results.append({
+                    "name": tags["name"],
+                    "type": place_type,
+                    "lat": el_lat,
+                    "lng": el_lng,
+                    "address": tags.get("addr:street", ""),
+                    "phone": tags.get("phone", ""),
                     "opening_hours": tags.get("opening_hours", ""),
                 })
-            return places
-        except Exception as e:
-            print(f"Overpass error: {e}")
-            return []
+            return results
+    except Exception as e:
+        print(f"Overpass error: {e}")
+        return []
 
 
 @tool

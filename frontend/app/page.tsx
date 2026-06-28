@@ -9,7 +9,7 @@ import { api } from '@/lib/api'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
 import type { Nudge, WorldState } from '@/types'
-import { Send, Mic } from 'lucide-react'
+import { Send, Mic, Bell } from 'lucide-react'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -225,34 +225,39 @@ export default function HomePage() {
   const location = worldState?.location
 
   return (
-    <div className="flex h-screen bg-jarvis-bg text-jarvis-text overflow-hidden">
+    <div className="flex h-dvh bg-jarvis-bg text-jarvis-text overflow-hidden">
       {/* Main chat area */}
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-jarvis-border bg-jarvis-surface">
-          <div className="flex items-center gap-3">
-            <span className="text-lg font-semibold tracking-tight">JARVIS</span>
-            <span className="text-xs text-jarvis-muted">v3</span>
+        {/* Header — compact on mobile */}
+        <header className="flex items-center justify-between px-3 py-2 md:px-4 md:py-3 border-b border-jarvis-border bg-jarvis-surface shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-base md:text-lg font-semibold tracking-tight">JARVIS</span>
+            <span className="text-xs text-jarvis-muted hidden sm:inline">v3</span>
           </div>
-          <div className="flex items-center gap-3 text-xs text-jarvis-muted">
-            {location?.city && <span>{location.city}</span>}
+          <div className="flex items-center gap-1.5 md:gap-3 text-xs text-jarvis-muted">
+            {/* Weather/location — hidden on very small screens */}
+            {location?.city && (
+              <span className="hidden xs:inline truncate max-w-[80px] md:max-w-none">{location.city}</span>
+            )}
             {weather?.temp_c != null && (
-              <span>{Math.round(weather.temp_c)}°C · {weather.condition}</span>
+              <span className="hidden sm:inline">{Math.round(weather.temp_c)}°C</span>
             )}
             <button
               onClick={syncLocation}
-              className="px-2 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors"
+              className="px-1.5 py-1 md:px-2 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors text-xs"
               title="Sync location"
             >
-              ⌖ Sync
+              ⌖
             </button>
             <button
               onClick={() => setPanelOpen(!panelOpen)}
-              className="relative px-2 py-1 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors"
+              className="relative p-1.5 md:px-2 md:py-1 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors"
+              title="Nudges"
             >
-              Nudges
+              <Bell size={16} className="md:hidden" />
+              <span className="hidden md:inline">Nudges</span>
               {nudges.length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center leading-none">
                   {nudges.length}
                 </span>
               )}
@@ -260,8 +265,8 @@ export default function HomePage() {
           </div>
         </header>
 
-        {/* Chat or Voice */}
-        <div className="flex-1 overflow-hidden relative flex flex-col">
+        {/* Chat or Voice — fills remaining height */}
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {voiceActive && userToken ? (
             <div className="flex flex-col items-center justify-center h-full gap-6">
               <p className="text-jarvis-muted text-sm">Voice mode active</p>
@@ -282,16 +287,16 @@ export default function HomePage() {
           ) : (
             <>
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+              <div className="flex-1 overflow-y-auto px-3 md:px-4 py-4 space-y-3 pb-2">
                 {messages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-                    <p className="text-2xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
+                  <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-4">
+                    <p className="text-xl md:text-2xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
                     <p className="text-jarvis-muted text-sm">What's on your mind?</p>
                   </div>
                 )}
                 {messages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                    <div className={`max-w-[85%] md:max-w-[75%] rounded-2xl px-3 md:px-4 py-2 md:py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
                       msg.role === 'user'
                         ? 'bg-jarvis-accent text-white rounded-br-sm'
                         : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
@@ -303,22 +308,22 @@ export default function HomePage() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Input */}
-              <div className="px-4 py-3 border-t border-jarvis-border bg-jarvis-surface">
-                <div className="flex items-end gap-2">
+              {/* Input — fixed to bottom on mobile */}
+              <div className="shrink-0 px-3 md:px-4 py-2 md:py-3 border-t border-jarvis-border bg-jarvis-surface">
+                <div className="flex items-end gap-1.5 md:gap-2">
                   <textarea
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="Message JARVIS..."
                     rows={1}
-                    className="flex-1 resize-none bg-jarvis-bg border border-jarvis-border rounded-xl px-4 py-2.5 text-sm text-jarvis-text placeholder:text-jarvis-muted focus:outline-none focus:border-jarvis-accent transition-colors"
-                    style={{ maxHeight: '120px' }}
+                    className="flex-1 resize-none bg-jarvis-bg border border-jarvis-border rounded-xl px-3 md:px-4 py-2 md:py-2.5 text-sm text-jarvis-text placeholder:text-jarvis-muted focus:outline-none focus:border-jarvis-accent transition-colors"
+                    style={{ maxHeight: '100px' }}
                   />
                   {userToken && (
                     <button
                       onClick={() => setVoiceActive(true)}
-                      className="p-2.5 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent"
+                      className="p-2 md:p-2.5 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent shrink-0"
                       title="Voice mode"
                     >
                       <Mic size={18} />
@@ -327,7 +332,7 @@ export default function HomePage() {
                   <button
                     onClick={sendMessage}
                     disabled={!input.trim() || streaming || !userToken}
-                    className="p-2.5 rounded-xl bg-jarvis-accent hover:bg-jarvis-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-white"
+                    className="p-2 md:p-2.5 rounded-xl bg-jarvis-accent hover:bg-jarvis-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-white shrink-0"
                   >
                     <Send size={18} />
                   </button>
