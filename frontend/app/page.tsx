@@ -129,6 +129,15 @@ export default function HomePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  const handleTimerFromResponse = useCallback((response: string) => {
+    const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
+    if (timerMatch && (window as any).__jarvisAddTimer) {
+      const minutes = parseFloat(timerMatch[1])
+      const label = timerMatch[2]
+      ;(window as any).__jarvisAddTimer(label, minutes * 60 * 1000)
+    }
+  }, [])
+
   const sendMessage = useCallback(async () => {
     if (!input.trim() || streaming || !userToken) return
 
@@ -200,15 +209,6 @@ export default function HomePage() {
       setStreaming(false)
     }
   }, [input, streaming, userToken, messages, handleTimerFromResponse])
-
-  const handleTimerFromResponse = useCallback((response: string) => {
-    const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
-    if (timerMatch && (window as any).__jarvisAddTimer) {
-      const minutes = parseFloat(timerMatch[1])
-      const label = timerMatch[2]
-      ;(window as any).__jarvisAddTimer(label, minutes * 60 * 1000)
-    }
-  }, [])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
