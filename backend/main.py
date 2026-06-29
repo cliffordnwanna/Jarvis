@@ -60,7 +60,7 @@ MAX_RECENT = 10
 SUMMARY_THRESHOLD = 20
 
 
-async def prepare_messages(messages: list) -> list:
+async def prepare_messages(messages: list, user_id: str = None) -> list:
     if len(messages) <= MAX_RECENT:
         return messages
 
@@ -79,15 +79,35 @@ async def prepare_messages(messages: list) -> list:
             messages=[{
                 "role": "user",
                 "content": (
-                    "Summarise this conversation history in 3-5 bullet points. "
-                    "Focus on facts, decisions, names, and context useful later:\n\n"
+                    "Summarise this conversation. Extract:\n"
+                    "1. Key facts the user shared about themselves\n"
+                    "2. Decisions or plans made\n"
+                    "3. People mentioned and what was said about them\n"
+                    "4. Goals or tasks discussed\n\n"
+                    "Be specific and factual. Max 5 bullet points.\n\n"
                     + old_text
                 )
             }],
-            max_tokens=300,
+            max_tokens=400,
         )
         summary = res.choices[0].message.content
         print(f"[context] summarised {len(old)} older messages into {len(summary)} chars")
+
+        # Persist summary to Supabase so it survives session refreshes
+        if user_id:
+            try:
+                from backend.db.postgres import get_supabase
+                from datetime import datetime, timezone
+                db = get_supabase()
+                db.table("conversations").upsert({
+                    "user_id": user_id,
+                    "summary": summary,
+                    "message_count": len(messages),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }, on_conflict="user_id").execute()
+            except Exception as e:
+                print(f"[context] summary save failed: {e}")
+
         return [{"role": "user", "content": f"[Earlier conversation summary:\n{summary}]"}] + recent
     except Exception as e:
         print(f"[context] summarisation failed: {e}")
@@ -125,7 +145,7 @@ async def get_user_profile(user_id: str) -> dict:
 async def agent_endpoint(request: Request, user_id: str = Depends(get_current_user)):
     body = await request.json()
     raw_messages = body.get("messages", [])
-    messages = await prepare_messages(raw_messages)
+    messages = await prepare_messages(raw_messages, user_id=user_id)
 
     print(f"[agent] called by user={user_id}, last_message={messages[-1] if messages else 'none'}")
 
@@ -263,12 +283,36 @@ World state not available yet — user needs to grant location permission.
     profile = await get_user_profile(user_id)
     user_name = profile.get("display_name") or ""
 
+    # On a fresh session (≤2 messages), load the last saved conversation summary
+    conversation_context = ""
+    if len(messages) <= 2:
+        try:
+            from backend.db.postgres import get_supabase
+            db = get_supabase()
+            last_conv = db.table("conversations")\
+                .select("summary, updated_at")\
+                .eq("user_id", user_id)\
+                .order("updated_at", desc=True)\
+                .limit(1)\
+                .maybe_single()\
+                .execute()
+            if last_conv.data and last_conv.data.get("summary"):
+                conversation_context = (
+                    "PREVIOUS CONVERSATION CONTEXT:\n"
+                    + last_conv.data["summary"]
+                    + "\n\n(New session — use this context to continue naturally.)\n\n"
+                )
+                print(f"[agent] Loaded previous conversation summary for {user_id}")
+        except Exception as e:
+            print(f"[agent] Failed to load conversation summary: {e}")
+
     name_line = f"USER'S NAME: {user_name} — address them by this name.\n" if user_name else ""
     system_prompt = (
         f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
         + name_line
         + f"TODAY'S DATE: {today_str}\n"
         + f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
+        + conversation_context
         + world_context
         + "\n"
         + BASE_SYSTEM_PROMPT

@@ -14,3 +14,4 @@ supabase>=2.7.0
 openai>=1.40.0
 pytz>=2024.1
 apscheduler==3.10.4
+tavily-python>=0.3.0

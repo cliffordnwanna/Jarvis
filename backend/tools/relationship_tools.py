@@ -238,15 +238,20 @@ async def add_person(
     job: str = None,
 ) -> dict:
     """
-    Add a new person to the user's relationship network.
-    Use when the user says 'add X to my people', 'remember my friend X', 'I have a colleague named X', etc.
-    Args:
-        user_id: authenticated user UUID
-        name: person's full name
-        relationship_type: one of friend, family, colleague, mentor, acquaintance
-        notes: any details about them (job, personality, context)
-        birthday: ISO date string YYYY-MM-DD if mentioned
-        job: their job title or profession if mentioned
+    Add a new person to the user's relationship memory.
+
+    CALL THIS when the user:
+    - "Add X to my people"
+    - "Remember my friend/colleague/sister X"
+    - Mentions someone new they want JARVIS to remember
+    - Introduces a person: "This is X, she is my..."
+
+    relationship_type: friend, family, colleague, mentor, acquaintance
+    notes: any details about them (role, context, how you know them)
+    birthday: ISO format YYYY-MM-DD if mentioned
+    job: their profession or role
+
+    After adding, immediately call add_note_for_person if any details were shared.
     """
     db = get_supabase()
     try:
@@ -297,12 +302,20 @@ async def add_note_for_person(
     note: str,
 ) -> dict:
     """
-    Add a note or detail about someone already in the user's people.
-    Use when the user says 'note that Vincent likes chess', 'remember that Sarah got promoted', etc.
-    Args:
-        user_id: authenticated user UUID
-        person_name: name of the person (will be looked up)
-        note: the detail to remember
+    Save a note or memory about a specific person.
+
+    ALWAYS CALL THIS when the user shares ANY information about a person:
+    - "Cherry just got a new job"
+    - "Vincent is good with hardware"
+    - "Malik's presentation went well"
+    - "David's mum is in hospital"
+    - Any fact, update, or detail about someone
+
+    This is how JARVIS builds its memory of people.
+    Never acknowledge information about a person without saving it here.
+
+    person_name: the person's name as stored (must match exactly)
+    note: full detail of what was shared, in complete sentences
     """
     db = get_supabase()
     try:
@@ -330,12 +343,23 @@ async def add_note_for_person(
 @tool
 async def hybrid_search_notes_tool(query: str, user_id: str, person_id: str = None) -> list[dict]:
     """
-    Search relationship memory using hybrid semantic + keyword ranking.
-    Use this when the user mentions a person by name or asks what you know about someone.
-    Args:
-        query: natural language query about a person or memory
-        user_id: the authenticated user's ID
-        person_id: optional — restrict search to one person
+    Search relationship memory for information about a person or topic.
+
+    ALWAYS CALL THIS before answering any question about a person:
+    - "What do you know about Cherry?"
+    - "Tell me about Vincent"
+    - "What did Nnenna say about her job?"
+    - "When did I last talk to Malik?"
+    - Any question involving a person's name
+
+    Uses hybrid semantic + keyword search for accurate retrieval.
+    Returns the person's profile and any notes stored about them.
+    If no notes found, returns a clear indication so you can say
+    "I don't have notes on [name] yet" rather than guessing.
+
+    query: natural language query about a person or memory
+    user_id: the authenticated user's ID
+    person_id: optional — restrict search to one person
     """
     return await hybrid_search_notes(query=query, user_id=user_id, person_id=person_id)
 
@@ -349,16 +373,22 @@ async def create_reminder(
     event_type: str = "reminder",
 ) -> dict:
     """
-    Create a reminder or future event for the user.
-    Use when the user says: 'remind me to...', 'don't let me forget', 'call X on Friday', etc.
-    Args:
-        user_id: the authenticated user's UUID
-        title: what to remind about
-        scheduled_at: ISO 8601 datetime string — convert natural language to exact datetime
-                      ('tomorrow at 9am' → next day 09:00 UTC, 'in 2 hours' → now + 2h)
-        person_name: optional name of a person this reminder is about
-        event_type: one of: reminder, task, call, meeting, follow_up, check_in, occasion, birthday
-                    Use "reminder" for general reminders, "task" for work tasks, "call" for calls.
+    Create a future reminder or event that will fire as a nudge.
+
+    CALL THIS when user says:
+    - "Remind me to X"
+    - "Don't forget to X"
+    - "Set a reminder for X"
+    - "Add X to my schedule"
+    - Any request about a future action with a specific time
+
+    IMPORTANT: Use the exact ISO dates from the world context injected above.
+    Do NOT calculate dates yourself — use pre-computed values:
+    - "tomorrow at 9am"  → use TOMORROW_ISO + "T09:00:00"
+    - "next Monday at 3pm" → use NEXT_MONDAY_ISO + "T15:00:00"
+
+    event_type options: reminder, task, call, meeting, follow_up, check_in
+    person_name: optional — links reminder to a person in relationship memory
     """
     db = get_supabase()
 

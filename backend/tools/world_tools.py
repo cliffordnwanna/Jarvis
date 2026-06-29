@@ -7,7 +7,19 @@ from datetime import datetime, timezone
 
 @tool
 async def get_world_state(user_id: str) -> dict:
-    """Get the current world state for the user including location, weather, time, and context."""
+    """
+    Get the user's current real-world context including location, weather, and time.
+
+    CALL THIS when the user asks about:
+    - Current weather or temperature
+    - What time or day it is
+    - Their current location
+    - Whether to bring an umbrella
+    - Any location-aware recommendation
+
+    Returns location (city, district, country), weather (temp, condition,
+    rain probability), and time (hour, day, timezone).
+    """
     state = await cache_get(user_id)
     if not state:
         return {"error": "No world state available. User needs to grant location permission and POST to /context/update."}
@@ -22,7 +34,19 @@ async def send_nudge(
     priority: str = "medium",
     person_id: str = None,
 ) -> dict:
-    """Send a proactive nudge to the user. Priority: low, medium, or high."""
+    """
+    Send a proactive nudge/notification that appears in the user's nudge panel.
+
+    CALL THIS when you want to:
+    - Alert the user about something important
+    - Add a task or reminder to their nudge panel immediately
+    - Surface a relationship alert (birthday, overdue contact)
+    - Flag a weather warning or goal reminder
+
+    nudge_type options: weather, goal, relationship_birthday,
+                        relationship_cooling, relationship_followup, general
+    priority options: low, medium, high
+    """
     db = get_supabase()
     data = {
         "user_id": user_id,
@@ -38,23 +62,35 @@ async def send_nudge(
 
 
 @tool
-async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 1500) -> list:
-    """Find nearby places using Overpass API (OpenStreetMap) — completely free.
-    place_type options: restaurant, cafe, pharmacy, atm, fuel, hospital, supermarket, bank, hotel
+async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 1000) -> list:
+    """
+    Find places near the user's current location using OpenStreetMap (free).
+
+    CALL THIS when user asks:
+    - "Where can I eat nearby?"
+    - "Is there a pharmacy near me?"
+    - "Find me an ATM"
+    - "What's near me?"
+    - "Where's the nearest hospital/fuel station/bank?"
+
+    place_type options: restaurant, cafe, hotel, hospital, pharmacy, atm, fuel, bank, supermarket
+    radius: search radius in meters (default 1000m = 1km)
+
+    Returns list of places with name, type, and coordinates.
     """
     type_map = {
-        "restaurant": ('amenity', 'restaurant'),
-        "cafe": ('amenity', 'cafe'),
-        "pharmacy": ('amenity', 'pharmacy'),
-        "atm": ('amenity', 'atm'),
-        "fuel": ('amenity', 'fuel'),
-        "hospital": ('amenity', 'hospital'),
-        "supermarket": ('shop', 'supermarket'),
-        "bank": ('amenity', 'bank'),
-        "hotel": ('tourism', 'hotel'),
-        "guest_house": ('tourism', 'guest_house'),
+        "restaurant": ("amenity", "restaurant"),
+        "cafe": ("amenity", "cafe"),
+        "pharmacy": ("amenity", "pharmacy"),
+        "atm": ("amenity", "atm"),
+        "fuel": ("amenity", "fuel"),
+        "hospital": ("amenity", "hospital"),
+        "supermarket": ("shop", "supermarket"),
+        "bank": ("amenity", "bank"),
+        "hotel": ("tourism", "hotel"),
+        "guest_house": ("tourism", "guest_house"),
     }
-    tag_key, tag_val = type_map.get(place_type.lower(), ('amenity', place_type))
+    tag_key, tag_val = type_map.get(place_type.lower(), ("amenity", place_type))
 
     query = f"""[out:json][timeout:15];
 (
@@ -71,7 +107,6 @@ out center 10;"""
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if r.status_code != 200:
-                print(f"Overpass error: status {r.status_code}")
                 return []
             data = r.json()
             results = []
@@ -92,7 +127,7 @@ out center 10;"""
                 })
             return results
     except Exception as e:
-        print(f"Overpass error: {e}")
+        print(f"[get_nearby_places] error: {e}")
         return []
 
 
@@ -104,8 +139,17 @@ async def get_travel_eta(
     dest_lng: float,
     mode: str = "driving",
 ) -> dict:
-    """Get travel time and distance using OSRM — completely free.
-    mode: driving, walking, cycling
+    """
+    Calculate travel time between two locations using OSRM (free).
+
+    CALL THIS when user asks:
+    - "How long will it take to get to work?"
+    - "What's the travel time from X to Y?"
+    - "How far is it to [location]?"
+    - "Should I leave now to make it in time?"
+
+    mode options: driving, walking, cycling
+    Returns duration in minutes and distance in km.
     """
     profiles = {"driving": "car", "walking": "foot", "cycling": "bike"}
     profile = profiles.get(mode, "car")
@@ -130,5 +174,5 @@ async def get_travel_eta(
                     "summary": f"{duration_mins} min by {mode} ({distance_km} km)",
                 }
         except Exception as e:
-            print(f"OSRM error: {e}")
+            print(f"[get_travel_eta] OSRM error: {e}")
         return {"error": "Route not available", "duration_minutes": None}
