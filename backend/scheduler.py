@@ -139,10 +139,34 @@ async def recompute_strength_signals():
     """Runs nightly. Updates warm/cooling/cold signals for all people."""
     db = get_supabase()
     try:
-        db.rpc("recompute_strength_signals").execute()
-        logger.info("[scheduler] Strength signals recomputed")
+        people = db.table("people").select("id, last_contacted_at, contact_frequency_days").execute()
+        now = datetime.now(timezone.utc)
+        updated = 0
+        for person in (people.data or []):
+            try:
+                last = person.get("last_contacted_at")
+                freq = person.get("contact_frequency_days") or 30
+                if not last:
+                    signal = "cold"
+                else:
+                    last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                    days_since = (now - last_dt).days
+                    if days_since <= freq:
+                        signal = "warm"
+                    elif days_since <= freq * 2:
+                        signal = "cooling"
+                    else:
+                        signal = "cold"
+                db.table("people")\
+                    .update({"strength_signal": signal, "updated_at": now.isoformat()})\
+                    .eq("id", person["id"])\
+                    .execute()
+                updated += 1
+            except Exception as e:
+                logger.error(f"[scheduler] Strength signal error for {person.get('id')}: {e}")
+        logger.info(f"[scheduler] Strength signals recomputed for {updated} people")
     except Exception as e:
-        logger.error(f"[scheduler] Strength signal error: {e}")
+        logger.error(f"[scheduler] recompute_strength_signals error: {e}")
 
 
 async def morning_weather_briefing():
@@ -177,12 +201,20 @@ async def morning_weather_briefing():
         if not lat or not lng:
             try:
                 ws = db.table("world_state").select("state").eq("user_id", user_id).maybe_single().execute()
-                if ws and ws.data:
-                    state = ws.data.get("state", {})
-                    lat = state.get("_meta", {}).get("lat")
-                    lng = state.get("_meta", {}).get("lng")
+                if ws and ws.data and ws.data.get("state"):
+                    ws_state = ws.data["state"]
+                    # Try _meta first
+                    meta = ws_state.get("_meta", {})
+                    lat = meta.get("lat") or meta.get("latitude")
+                    lng = meta.get("lng") or meta.get("longitude")
+                    # Fallback: try location dict
+                    if not lat:
+                        loc = ws_state.get("location", {})
+                        lat = loc.get("lat")
+                        lng = loc.get("lng")
             except Exception:
                 pass
+        logger.info(f"[scheduler] morning briefing lat={lat} lng={lng} for {user_id}")
 
         # Skip if already sent today
         try:

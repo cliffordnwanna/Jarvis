@@ -5,7 +5,7 @@ load_dotenv()
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import context, nudges, people, goals, memory, llm, briefing, voice, reminders
+from backend.routers import context, nudges, people, goals, memory, llm, briefing, voice, reminders, users
 from backend.scheduler import start_scheduler
 from backend.auth import get_current_user
 from backend.db.cache import cache_get
@@ -40,6 +40,7 @@ app.include_router(llm.router, prefix="/llm", tags=["llm"])
 app.include_router(briefing.router, prefix="/briefing", tags=["briefing"])
 app.include_router(voice.router, prefix="/voice", tags=["voice"])
 app.include_router(reminders.router, prefix="/reminders", tags=["reminders"])
+app.include_router(users.router, prefix="/users", tags=["users"])
 
 
 @app.on_event("startup")
@@ -95,6 +96,29 @@ async def prepare_messages(messages: list) -> list:
 
 def get_graph(system_prompt: str = None):
     return build_graph(system_prompt or BASE_SYSTEM_PROMPT)
+
+
+# Module-level cache — one DB hit per user per backend restart
+_user_profile_cache: dict = {}
+
+async def get_user_profile(user_id: str) -> dict:
+    if user_id in _user_profile_cache:
+        return _user_profile_cache[user_id]
+    from backend.db.postgres import get_supabase
+    db = get_supabase()
+    try:
+        res = db.table("users")\
+            .select("display_name, timezone, morning_nudge_time")\
+            .eq("id", user_id)\
+            .maybe_single()\
+            .execute()
+        profile = res.data or {}
+        _user_profile_cache[user_id] = profile
+        print(f"[profile] Loaded for {user_id}: name={profile.get('display_name')}")
+        return profile
+    except Exception as e:
+        print(f"[profile] Fetch error: {e}")
+        return {}
 
 
 @app.post("/agent")
@@ -154,7 +178,16 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
         city        = location.get("city", "")
         state       = location.get("state", "")
         country     = location.get("country", "")
-        location_str = ", ".join(filter(None, [district, city, state, country]))
+        _loc_parts = []
+        if district and district.lower() != city.lower():
+            _loc_parts.append(district)
+        if city:
+            _loc_parts.append(city)
+        if state and state.lower() != city.lower():
+            _loc_parts.append(state)
+        if country:
+            _loc_parts.append(country)
+        location_str = ", ".join(_loc_parts)
 
         temp_c         = weather.get("temp_c")
         feels_like     = weather.get("feels_like_c")
@@ -227,10 +260,15 @@ Next weekdays:
 World state not available yet — user needs to grant location permission.
 """
 
+    profile = await get_user_profile(user_id)
+    user_name = profile.get("display_name") or ""
+
+    name_line = f"USER'S NAME: {user_name} — address them by this name.\n" if user_name else ""
     system_prompt = (
         f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
-        f"TODAY'S DATE: {today_str}\n"
-        f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
+        + name_line
+        + f"TODAY'S DATE: {today_str}\n"
+        + f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
         + world_context
         + "\n"
         + BASE_SYSTEM_PROMPT

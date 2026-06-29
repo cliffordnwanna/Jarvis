@@ -44,7 +44,7 @@ export default function LoginPage() {
           }}
           theme="dark"
           providers={['google']}
-          redirectTo="http://localhost:3000"
+          redirectTo={typeof window !== 'undefined' ? `${window.location.origin}/` : '/'}
         />
       </div>
     </div>

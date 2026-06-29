@@ -107,13 +107,46 @@ _UUID_RE = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -> list[dict]:
     """Hybrid search: semantic vector + keyword ranking combined (Vellum-style)."""
     if not _UUID_RE.match(str(user_id)):
-        print(f"Hybrid search skipped: invalid user_id '{user_id}'")
+        print(f"[search] Invalid user_id: {user_id}")
         return []
+
+    db = get_supabase()
+    resolved_person_id = person_id
+    resolved_person_name = None
+
+    # Stage 1: Score-based person resolution from query text
+    if not resolved_person_id:
+        try:
+            people = db.table("people").select("id, name").eq("user_id", user_id).execute()
+            query_lower = query.lower()
+            best_match = None
+            best_score = 0
+            for person in (people.data or []):
+                name_lower = person["name"].lower()
+                name_parts = name_lower.split()
+                if name_lower in query_lower:
+                    score = 100
+                elif name_parts[0] in query_lower:
+                    score = 80
+                elif len(name_parts) > 1 and name_parts[-1] in query_lower:
+                    score = 70
+                else:
+                    score = 0
+                if score > best_score:
+                    best_score = score
+                    best_match = person
+            if best_match and best_score > 0:
+                resolved_person_id = best_match["id"]
+                resolved_person_name = best_match["name"]
+                print(f"[search] Resolved '{resolved_person_name}' (score={best_score})")
+        except Exception as e:
+            print(f"[search] Person resolution error: {e}")
+
+    # Stage 2: Hybrid vector + keyword search
     embedding = await embed_text(query)
     if not embedding:
         return []
 
-    db = get_supabase()
     try:
         params = {
             "query_text": query,
@@ -123,12 +156,38 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
             "keyword_weight": 0.3,
             "match_count": 8,
         }
-        if person_id:
-            params["match_person_id"] = person_id
+        if resolved_person_id:
+            params["match_person_id"] = resolved_person_id
         res = db.rpc("hybrid_search_notes", params).execute()
-        return res.data or []
+        results = res.data or []
+
+        # Stage 3: Prepend person profile as context when searching for a specific person
+        if resolved_person_id and results:
+            try:
+                profile = db.table("people")\
+                    .select("name, relationship_type, circle, birthday, last_contacted_at, strength_signal")\
+                    .eq("id", resolved_person_id)\
+                    .single()\
+                    .execute()
+                if profile.data:
+                    p = profile.data
+                    results.insert(0, {
+                        "content": (
+                            f"Profile: {p['name']} is a {p['relationship_type']} ({p['circle']} circle). "
+                            f"Last contacted: {p.get('last_contacted_at', 'unknown')}. "
+                            f"Relationship strength: {p.get('strength_signal', 'unknown')}."
+                        ),
+                        "person_id": resolved_person_id,
+                        "score": 1.0,
+                        "created_at": None,
+                    })
+            except Exception:
+                pass
+
+        print(f"[search] {len(results)} results for query='{query[:50]}' person={resolved_person_name}")
+        return results
     except Exception as e:
-        print(f"Hybrid search error: {e}")
+        print(f"[search] Hybrid search error: {e}")
         return []
 
 
@@ -250,19 +309,19 @@ async def create_reminder(
     title: str,
     scheduled_at: str,
     person_name: str = None,
-    event_type: str = "check_in",
+    event_type: str = "reminder",
 ) -> dict:
     """
-    Create a reminder or timer for the user.
-    Use when the user says: 'remind me to...', 'set a timer for...', 'don't let me forget',
-    'call X on Friday', 'check on Y tomorrow', etc.
+    Create a reminder or future event for the user.
+    Use when the user says: 'remind me to...', 'don't let me forget', 'call X on Friday', etc.
     Args:
         user_id: the authenticated user's UUID
         title: what to remind about
         scheduled_at: ISO 8601 datetime string — convert natural language to exact datetime
                       ('tomorrow at 9am' → next day 09:00 UTC, 'in 2 hours' → now + 2h)
         person_name: optional name of a person this reminder is about
-        event_type: one of: check_in, call, follow_up, birthday, reminder
+        event_type: one of: reminder, task, call, meeting, follow_up, check_in, occasion, birthday
+                    Use "reminder" for general reminders, "task" for work tasks, "call" for calls.
     """
     db = get_supabase()
 
@@ -279,6 +338,11 @@ async def create_reminder(
                 person_id = res.data[0]["id"]
         except Exception as e:
             print(f"[create_reminder] person lookup error: {e}")
+
+    # Guard: remap any unrecognised event_type to reminder
+    VALID_EVENT_TYPES = {"birthday", "follow_up", "call", "meeting", "occasion", "check_in", "reminder", "task"}
+    if event_type not in VALID_EVENT_TYPES:
+        event_type = "reminder"
 
     try:
         row = {

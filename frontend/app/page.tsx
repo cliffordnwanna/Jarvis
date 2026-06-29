@@ -30,17 +30,37 @@ export default function HomePage() {
   const [streaming, setStreaming] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  const checkOnboarding = useCallback(async (token: string) => {
+    try {
+      const res = await fetch(`${JARVIS_URL}/users/profile`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const profile = await res.json()
+        if (!profile.display_name) {
+          router.push('/onboarding')
+          return false
+        }
+      }
+    } catch (e) {
+      console.log('[onboarding] check failed, proceeding:', e)
+    }
+    return true
+  }, [router])
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) router.push('/login')
-      else setUserToken(session.access_token)
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) { router.push('/login'); return }
+      const ok = await checkOnboarding(session.access_token)
+      if (ok) setUserToken(session.access_token)
     })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
-      if (!session) router.push('/login')
-      else setUserToken(session.access_token)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_, session) => {
+      if (!session) { router.push('/login'); return }
+      const ok = await checkOnboarding(session.access_token)
+      if (ok) setUserToken(session.access_token)
     })
     return () => subscription.unsubscribe()
-  }, [router])
+  }, [router, checkOnboarding])
 
   const refreshNudges = useCallback(async (token: string) => {
     try {
