@@ -105,7 +105,11 @@ import re as _re
 _UUID_RE = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', _re.I)
 
 async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -> list[dict]:
-    """Hybrid search: semantic vector + keyword ranking combined (Vellum-style)."""
+    """Hybrid search: semantic vector + keyword ranking combined (Vellum-style).
+
+    STRICT ISOLATION: if a person is identified in the query, ONLY their data
+    is returned — never another person's notes as a fallback.
+    """
     if not _UUID_RE.match(str(user_id)):
         print(f"[search] Invalid user_id: {user_id}")
         return []
@@ -138,69 +142,75 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
             if best_match and best_score > 0:
                 resolved_person_id = best_match["id"]
                 resolved_person_name = best_match["name"]
-                print(f"[search] Resolved '{resolved_person_name}' (score={best_score})")
+                print(f"[search] Resolved: {resolved_person_name} (score={best_score})")
         except Exception as e:
             print(f"[search] Person resolution error: {e}")
 
-    # Stage 2: If a person was resolved, fetch their profile + person-scoped notes
-    # Always return profile first so agent knows who they are even if no notes exist
+    # Stage 2: Specific person identified — return ONLY their data, never fall through
     if resolved_person_id:
+        results = []
+
+        # Always fetch their profile
         try:
             profile_res = db.table("people")\
-                .select("name, relationship_type, circle, birthday, last_contacted_at, strength_signal, notes_summary")\
+                .select("*")\
                 .eq("id", resolved_person_id)\
                 .single()\
                 .execute()
-
             if profile_res.data:
                 p = profile_res.data
-                profile_content = f"{p['name']} is your {p['relationship_type']} ({p['circle']} circle)."
+                parts = [f"{p['name']} is your {p['relationship_type']}"]
                 if p.get("birthday"):
-                    profile_content += f" Birthday: {p['birthday']}."
+                    parts.append(f"birthday {p['birthday']}")
                 if p.get("last_contacted_at"):
-                    profile_content += f" Last contacted: {p['last_contacted_at'][:10]}."
-                profile_content += f" Relationship strength: {p.get('strength_signal', 'unknown')}."
-                if p.get("notes_summary"):
-                    profile_content += f" Notes: {p['notes_summary']}"
-
-                profile_result = {
-                    "content": profile_content,
+                    parts.append(f"last contacted {p['last_contacted_at'][:10]}")
+                parts.append(f"relationship strength: {p.get('strength_signal', 'unknown')}")
+                results.append({
+                    "content": ". ".join(parts) + ".",
                     "person_id": resolved_person_id,
                     "score": 1.0,
                     "created_at": None,
-                }
-
-                # Fetch person-scoped notes
-                notes_results = []
-                embedding = await embed_text(query)
-                if embedding:
-                    try:
-                        params = {
-                            "query_text": query,
-                            "query_embedding": "[" + ",".join(f"{x:.8f}" for x in embedding) + "]",
-                            "match_user_id": user_id,
-                            "match_person_id": resolved_person_id,
-                            "semantic_weight": 0.7,
-                            "keyword_weight": 0.3,
-                            "match_count": 5,
-                        }
-                        res = db.rpc("hybrid_search_notes", params).execute()
-                        notes_results = res.data or []
-                    except Exception as e:
-                        print(f"[search] Notes search error: {e}")
-
-                print(f"[search] {p['name']}: profile + {len(notes_results)} notes")
-                return [profile_result] + notes_results
-
+                    "type": "profile",
+                })
         except Exception as e:
             print(f"[search] Profile fetch error: {e}")
 
-    # Stage 3: No person resolved — general search across all notes
-    embedding = await embed_text(query)
-    if not embedding:
-        return []
+        # Search their notes (person-scoped — never bleeds into other people)
+        try:
+            embedding = await embed_text(query)
+            if embedding:
+                params = {
+                    "query_text": query,
+                    "query_embedding": "[" + ",".join(f"{x:.8f}" for x in embedding) + "]",
+                    "match_user_id": user_id,
+                    "match_person_id": resolved_person_id,
+                    "semantic_weight": 0.7,
+                    "keyword_weight": 0.3,
+                    "match_count": 5,
+                }
+                res = db.rpc("hybrid_search_notes", params).execute()
+                notes = res.data or []
+                results.extend(notes)
+                print(f"[search] {resolved_person_name}: {len(notes)} notes")
+        except Exception as e:
+            print(f"[search] Notes search error: {e}")
 
+        # CRITICAL: always return here — never fall through to general search
+        if not results:
+            return [{
+                "content": "No information found for this person.",
+                "person_id": resolved_person_id,
+                "score": 0.0,
+                "created_at": None,
+                "type": "empty",
+            }]
+        return results
+
+    # Stage 3: No specific person identified — general search across all notes
     try:
+        embedding = await embed_text(query)
+        if not embedding:
+            return []
         params = {
             "query_text": query,
             "query_embedding": "[" + ",".join(f"{x:.8f}" for x in embedding) + "]",
