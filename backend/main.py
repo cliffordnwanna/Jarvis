@@ -289,17 +289,17 @@ World state not available yet — user needs to grant location permission.
         try:
             from backend.db.postgres import get_supabase
             db = get_supabase()
-            last_conv = db.table("conversations")\
+            result = db.table("conversations")\
                 .select("summary, updated_at")\
                 .eq("user_id", user_id)\
                 .order("updated_at", desc=True)\
                 .limit(1)\
                 .maybe_single()\
                 .execute()
-            if last_conv.data and last_conv.data.get("summary"):
+            if result and result.data and result.data.get("summary"):
                 conversation_context = (
                     "PREVIOUS CONVERSATION CONTEXT:\n"
-                    + last_conv.data["summary"]
+                    + result.data["summary"]
                     + "\n\n(New session — use this context to continue naturally.)\n\n"
                 )
                 print(f"[agent] Loaded previous conversation summary for {user_id}")
