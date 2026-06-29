@@ -142,7 +142,60 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
         except Exception as e:
             print(f"[search] Person resolution error: {e}")
 
-    # Stage 2: Hybrid vector + keyword search
+    # Stage 2: If a person was resolved, fetch their profile + person-scoped notes
+    # Always return profile first so agent knows who they are even if no notes exist
+    if resolved_person_id:
+        try:
+            profile_res = db.table("people")\
+                .select("name, relationship_type, circle, birthday, last_contacted_at, strength_signal, notes_summary")\
+                .eq("id", resolved_person_id)\
+                .single()\
+                .execute()
+
+            if profile_res.data:
+                p = profile_res.data
+                profile_content = f"{p['name']} is your {p['relationship_type']} ({p['circle']} circle)."
+                if p.get("birthday"):
+                    profile_content += f" Birthday: {p['birthday']}."
+                if p.get("last_contacted_at"):
+                    profile_content += f" Last contacted: {p['last_contacted_at'][:10]}."
+                profile_content += f" Relationship strength: {p.get('strength_signal', 'unknown')}."
+                if p.get("notes_summary"):
+                    profile_content += f" Notes: {p['notes_summary']}"
+
+                profile_result = {
+                    "content": profile_content,
+                    "person_id": resolved_person_id,
+                    "score": 1.0,
+                    "created_at": None,
+                }
+
+                # Fetch person-scoped notes
+                notes_results = []
+                embedding = await embed_text(query)
+                if embedding:
+                    try:
+                        params = {
+                            "query_text": query,
+                            "query_embedding": "[" + ",".join(f"{x:.8f}" for x in embedding) + "]",
+                            "match_user_id": user_id,
+                            "match_person_id": resolved_person_id,
+                            "semantic_weight": 0.7,
+                            "keyword_weight": 0.3,
+                            "match_count": 5,
+                        }
+                        res = db.rpc("hybrid_search_notes", params).execute()
+                        notes_results = res.data or []
+                    except Exception as e:
+                        print(f"[search] Notes search error: {e}")
+
+                print(f"[search] {p['name']}: profile + {len(notes_results)} notes")
+                return [profile_result] + notes_results
+
+        except Exception as e:
+            print(f"[search] Profile fetch error: {e}")
+
+    # Stage 3: No person resolved — general search across all notes
     embedding = await embed_text(query)
     if not embedding:
         return []
@@ -156,38 +209,12 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
             "keyword_weight": 0.3,
             "match_count": 8,
         }
-        if resolved_person_id:
-            params["match_person_id"] = resolved_person_id
         res = db.rpc("hybrid_search_notes", params).execute()
         results = res.data or []
-
-        # Stage 3: Prepend person profile as context when searching for a specific person
-        if resolved_person_id and results:
-            try:
-                profile = db.table("people")\
-                    .select("name, relationship_type, circle, birthday, last_contacted_at, strength_signal")\
-                    .eq("id", resolved_person_id)\
-                    .single()\
-                    .execute()
-                if profile.data:
-                    p = profile.data
-                    results.insert(0, {
-                        "content": (
-                            f"Profile: {p['name']} is a {p['relationship_type']} ({p['circle']} circle). "
-                            f"Last contacted: {p.get('last_contacted_at', 'unknown')}. "
-                            f"Relationship strength: {p.get('strength_signal', 'unknown')}."
-                        ),
-                        "person_id": resolved_person_id,
-                        "score": 1.0,
-                        "created_at": None,
-                    })
-            except Exception:
-                pass
-
-        print(f"[search] {len(results)} results for query='{query[:50]}' person={resolved_person_name}")
+        print(f"[search] General search: {len(results)} results for '{query[:50]}'")
         return results
     except Exception as e:
-        print(f"[search] Hybrid search error: {e}")
+        print(f"[search] General search error: {e}")
         return []
 
 
