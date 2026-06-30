@@ -22,7 +22,7 @@ export default function HomePage() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown')
-  const [inlineTimer, setInlineTimer] = useState<{ label: string; endsAt: number; msgIndex: number } | null>(null)
+  const [activeTimer, setActiveTimer] = useState<{ label: string; seconds: number; msgIndex: number } | null>(null)
   const [currentTime, setCurrentTime] = useState<string>('')
   const [contextReady, setContextReady] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -236,12 +236,23 @@ export default function HomePage() {
   }, [])
 
   const handleTimerFromResponse = useCallback((response: string, msgIndex: number) => {
-    // Detect __TIMER__:seconds:label sentinel from create_timer tool
-    const timerMatch = response.match(/__TIMER__:(\d+):(.+)$/)
-    if (timerMatch) {
-      const seconds = parseInt(timerMatch[1], 10)
-      const label = timerMatch[2].trim()
-      setInlineTimer({ label, endsAt: Date.now() + seconds * 1000, msgIndex })
+    // __TIMER__:seconds:label — primary format from create_timer tool
+    let m = response.match(/__TIMER__:(\d+(?:\.\d+)?):([^_\n]+)/)
+    if (m) {
+      const seconds = Math.round(parseFloat(m[1]))
+      const label = m[2].trim()
+      setActiveTimer({ seconds, label, msgIndex })
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission()
+      }
+      return
+    }
+    // [TIMER:minutes:label] — legacy fallback, convert minutes → seconds
+    m = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
+    if (m) {
+      const seconds = Math.round(parseFloat(m[1]) * 60)
+      const label = m[2].trim()
+      setActiveTimer({ seconds, label, msgIndex })
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission()
       }
@@ -486,7 +497,6 @@ export default function HomePage() {
               )}
               {messages.map((msg, i) => {
                 const displayContent = msg.content.replace(/\s*__TIMER__:\d+:.+$/m, '').trim()
-                const hasTimer = inlineTimer?.msgIndex === i
                 return (
                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                     <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
@@ -496,11 +506,11 @@ export default function HomePage() {
                     }`}>
                       {displayContent || (streaming && i === messages.length - 1 ? '▋' : '')}
                     </div>
-                    {hasTimer && inlineTimer && (
+                    {activeTimer && activeTimer.msgIndex === i && (
                       <InlineTimer
-                        label={inlineTimer.label}
-                        endsAt={inlineTimer.endsAt}
-                        onDone={() => setInlineTimer(null)}
+                        key={`timer-${activeTimer.msgIndex}`}
+                        label={activeTimer.label}
+                        seconds={activeTimer.seconds}
                       />
                     )}
                   </div>
@@ -572,71 +582,81 @@ function getTimeOfDay() {
   return 'evening'
 }
 
-function playTimerChime() {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
-    if (!AudioCtx) return
-    const ctx = new AudioCtx()
-    const tones = [523.25, 659.25, 783.99] // C5, E5, G5
-    tones.forEach((freq, i) => {
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain)
-      gain.connect(ctx.destination)
-      osc.frequency.value = freq
-      osc.type = 'sine'
-      const t0 = ctx.currentTime + i * 0.4
-      const t1 = t0 + 0.8
-      gain.gain.setValueAtTime(0, t0)
-      gain.gain.linearRampToValueAtTime(0.4, t0 + 0.05)
-      gain.gain.linearRampToValueAtTime(0, t1)
-      osc.start(t0)
-      osc.stop(t1)
-    })
-    setTimeout(() => ctx.close(), 3000)
-  } catch (e) {
-    console.log('Audio chime error:', e)
-  }
-}
-
-function InlineTimer({ label, endsAt, onDone }: { label: string; endsAt: number; onDone: () => void }) {
-  const [remaining, setRemaining] = useState(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)))
+function InlineTimer({ label, seconds }: { label: string; seconds: number }) {
+  const [remaining, setRemaining] = useState(seconds)
   const [done, setDone] = useState(false)
+  const doneRef = useRef(false)
 
   useEffect(() => {
+    if (doneRef.current) return
     const interval = setInterval(() => {
       setRemaining(prev => {
         if (prev <= 1) {
           clearInterval(interval)
-          setDone(true)
-          playTimerChime()
-          if (window.speechSynthesis) {
-            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+          if (!doneRef.current) {
+            doneRef.current = true
+            setDone(true)
+            try {
+              const AC = window.AudioContext || (window as any).webkitAudioContext
+              if (AC) {
+                const ctx = new AC()
+                ;[523.25, 659.25, 783.99].forEach((freq, i) => {
+                  const osc = ctx.createOscillator()
+                  const gain = ctx.createGain()
+                  osc.connect(gain)
+                  gain.connect(ctx.destination)
+                  osc.frequency.value = freq
+                  osc.type = 'sine'
+                  const t = ctx.currentTime + i * 0.4
+                  gain.gain.setValueAtTime(0, t)
+                  gain.gain.linearRampToValueAtTime(0.3, t + 0.05)
+                  gain.gain.linearRampToValueAtTime(0, t + 0.8)
+                  osc.start(t)
+                  osc.stop(t + 0.8)
+                })
+                setTimeout(() => ctx.close(), 3000)
+              }
+            } catch {}
+            try {
+              window.speechSynthesis?.cancel()
+              window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+            } catch {}
+            try {
+              if (Notification.permission === 'granted') {
+                new Notification('⏰ JARVIS', { body: `${label} — done!` })
+              }
+            } catch {}
           }
-          if (Notification.permission === 'granted') {
-            new Notification('⏰ JARVIS', { body: `${label} — done!` })
-          }
-          setTimeout(onDone, 3000)
           return 0
         }
         return prev - 1
       })
     }, 1000)
     return () => clearInterval(interval)
-  }, [label, onDone])
+  }, [label, seconds])
 
   const mins = Math.floor(remaining / 60)
   const secs = remaining % 60
-  const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+  const display = mins > 0
+    ? `${mins}:${String(secs).padStart(2, '0')}`
+    : `${String(secs).padStart(2, '0')}`
 
-  if (done) return (
-    <span className="text-green-400 text-sm mt-1.5 block">⏰ {label} — Done! 🔔</span>
-  )
+  if (done) {
+    return (
+      <div className="mt-2 flex items-center gap-2 text-green-400 text-sm font-medium">
+        <span>⏰</span>
+        <span>{label} — Done!</span>
+        <span>🔔</span>
+      </div>
+    )
+  }
 
   return (
-    <span className="text-blue-300 text-sm font-mono mt-1.5 block">
-      ⏰ {label} — <strong>{timeStr}</strong> remaining
-    </span>
+    <div className="mt-2 inline-flex items-center gap-3 bg-gray-800/80 border border-white/10 rounded-xl px-4 py-2">
+      <span className="text-blue-400">⏰</span>
+      <span className="text-gray-300 text-sm">{label}</span>
+      <span className="font-mono font-bold text-white text-lg tabular-nums">{display}</span>
+    </div>
   )
 }
 
