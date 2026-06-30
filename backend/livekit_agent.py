@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions
-from livekit.plugins import openai, silero
+from livekit.agents import AgentSession, Agent
+from livekit.plugins import openai
 
 from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta
 from backend.tools.goal_tools import get_goals, manage_goal
@@ -117,7 +117,6 @@ async def entrypoint(ctx: agents.JobContext):
         stt=openai.STT(model="whisper-1"),
         llm=openai.LLM(model="gpt-4o"),
         tts=openai.TTS(voice="alloy"),
-        vad=silero.VAD.load(),
     )
 
     jarvis = JARVISAgent(user_id=user_id, user_context=user_context)
@@ -125,9 +124,6 @@ async def entrypoint(ctx: agents.JobContext):
     await session.start(
         room=ctx.room,
         agent=jarvis,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=openai.realtime.NoiseReduction(type="near_field"),
-        ),
     )
 
     await session.generate_reply(
