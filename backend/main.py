@@ -128,7 +128,7 @@ async def get_user_profile(user_id: str) -> dict:
     db = get_supabase()
     try:
         res = db.table("users")\
-            .select("display_name, timezone, morning_nudge_time")\
+            .select("display_name, timezone, morning_nudge_time, home_lat, home_lng")\
             .eq("id", user_id)\
             .maybe_single()\
             .execute()
@@ -314,9 +314,16 @@ World state not available yet — user needs to grant location permission.
             print(f"[agent] Failed to load conversation summary: {e}")
 
     name_line = f"USER'S NAME: {user_name} — address them by this name.\n" if user_name else ""
+    home_lat = profile.get("home_lat")
+    home_lng = profile.get("home_lng")
+    home_line = (
+        f"USER'S HOME COORDINATES: {home_lat}, {home_lng} — use these when asked for directions home.\n"
+        if home_lat and home_lng else ""
+    )
     system_prompt = (
         f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
         + name_line
+        + home_line
         + f"TODAY'S DATE: {today_str}\n"
         + f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
         + conversation_context

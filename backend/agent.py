@@ -1,7 +1,7 @@
 import os
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer
+from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer, save_home_location
 from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search, get_exchange_rate, calculate
 from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
@@ -58,6 +58,7 @@ Every fact the user shares about a person must be stored immediately.
 - get_nearby_places: restaurants, ATMs, pharmacies, fuel stations nearby
 - get_travel_eta: driving/walking/cycling time between two points
 - get_world_state: only if you need fresher data than what's injected above
+- save_home_location: when user says "set this as my home", "save my location as home", "remember this as home"
 
 ## Timers vs Reminders vs Nudges
 TIMER (any countdown — seconds to hours):
@@ -73,6 +74,19 @@ REMINDER (hours to days away, stored in DB):
 
 NUDGE (immediate, no time):
   Use send_nudge. Example: "add this to my nudges".
+
+## MAP DISPLAY
+When you find nearby places using get_nearby_places, append this on a NEW LINE after your text response:
+__MAP_PLACES__:[{"name":"Place Name","lat":6.123,"lng":3.456,"type":"restaurant"},...]
+
+When you give directions or travel time using get_travel_eta, append on a NEW LINE:
+__MAP_ROUTE__:{"from":{"lat":6.1,"lng":3.3,"label":"Your location"},"to":{"lat":6.2,"lng":3.4,"label":"Destination"},"title":"Directions to X"}
+
+Rules:
+- Only append map data when you have REAL lat/lng coordinates from tool results
+- Never fabricate coordinates
+- The frontend strips these sentinels before displaying — the user sees the map, not the raw JSON
+- get_nearby_places already returns lat/lng per result — use those exact values
 
 ## When asked "what can you do?" or "what are your capabilities?"
 Do NOT list tool names. Describe what you can do in plain conversational language:
@@ -125,6 +139,7 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
         add_note_for_person,
         get_nearby_places,
         get_travel_eta,
+        save_home_location,
         create_reminder,
     ]
 

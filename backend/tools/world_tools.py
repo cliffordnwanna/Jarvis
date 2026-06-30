@@ -6,6 +6,32 @@ from datetime import datetime, timezone
 
 
 @tool
+async def save_home_location(user_id: str) -> dict:
+    """
+    Save the user's current location as their home address.
+    Call this when user says 'set this as my home', 'save my location as home',
+    'remember this as home', 'this is my home'.
+    """
+    db = get_supabase()
+    try:
+        ws = await cache_get(user_id)
+        if not ws:
+            return {"error": "No location available"}
+        location = ws.get("location", {})
+        lat = location.get("lat")
+        lng = location.get("lng")
+        city = location.get("city", "")
+        district = location.get("district", "")
+        if not lat or not lng:
+            return {"error": "Cannot get coordinates from current location"}
+        db.table("users").update({"home_lat": lat, "home_lng": lng}).eq("id", user_id).execute()
+        loc_name = f"{district}, {city}" if district and district != city else city
+        return {"status": "saved", "location": loc_name, "lat": lat, "lng": lng}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool
 def create_timer(label: str, seconds: int) -> str:
     """
     Create a countdown timer that appears in the user's chat interface.

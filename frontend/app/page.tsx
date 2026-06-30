@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { NudgePanel } from '@/components/NudgePanel'
 import { VoiceMode } from '@/components/VoiceMode'
+import { MapWidget } from '@/components/MapWidget'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
 import type { Nudge, WorldState, Message } from '@/types'
@@ -23,6 +24,15 @@ export default function HomePage() {
   const [streaming, setStreaming] = useState(false)
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown')
   const [activeTimer, setActiveTimer] = useState<{ label: string; seconds: number; msgIndex: number } | null>(null)
+  const [activeMap, setActiveMap] = useState<{
+    type: 'places' | 'route'
+    title: string
+    places?: Array<{ name: string; lat: number; lng: number; type?: string }>
+    route?: { from: { lat: number; lng: number; label: string }; to: { lat: number; lng: number; label: string } }
+    userLat?: number
+    userLng?: number
+    msgIndex: number
+  } | null>(null)
   const [currentTime, setCurrentTime] = useState<string>('')
   const [contextReady, setContextReady] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -259,6 +269,38 @@ export default function HomePage() {
     }
   }, [])
 
+  const handleMapFromResponse = useCallback((response: string, msgIndex: number) => {
+    const placesMatch = response.match(/__MAP_PLACES__:(\[[\s\S]+?\])(?:\n|$)/)
+    if (placesMatch) {
+      try {
+        const places = JSON.parse(placesMatch[1])
+        setActiveMap({
+          type: 'places',
+          title: 'Nearby places',
+          places,
+          userLat: worldState?.location?.lat,
+          userLng: worldState?.location?.lng,
+          msgIndex,
+        })
+        return
+      } catch {}
+    }
+    const routeMatch = response.match(/__MAP_ROUTE__:(\{[\s\S]+?\})(?:\n|$)/)
+    if (routeMatch) {
+      try {
+        const route = JSON.parse(routeMatch[1])
+        setActiveMap({
+          type: 'route',
+          title: route.title || 'Directions',
+          route,
+          userLat: worldState?.location?.lat,
+          userLng: worldState?.location?.lng,
+          msgIndex,
+        })
+      } catch {}
+    }
+  }, [worldState])
+
   const sendMessage = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput ?? input).trim()
     if (!text || streaming || !userToken) return
@@ -313,13 +355,16 @@ export default function HomePage() {
         }
       }
 
-      // After stream ends — handle timer + speech
+      // After stream ends — handle timer, map, clean sentinels
       if (assistantContent) {
-        setMessages(prev => {
-          handleTimerFromResponse(assistantContent, prev.length - 1)
-          return prev
-        })
-        const cleaned = assistantContent.replace(/\s*__TIMER__:\d+:.+$/m, '').trim()
+        const msgIdx = messages.length  // index of the assistant message just added
+        handleTimerFromResponse(assistantContent, msgIdx)
+        handleMapFromResponse(assistantContent, msgIdx)
+        const cleaned = assistantContent
+          .replace(/\s*__TIMER__:\d+(?:\.\d+)?:[^\n]+/gm, '')
+          .replace(/\s*__MAP_PLACES__:\[[\s\S]+?\](?:\n|$)/gm, '')
+          .replace(/\s*__MAP_ROUTE__:\{[\s\S]+?\}(?:\n|$)/gm, '')
+          .trim()
         if (cleaned !== assistantContent) {
           setMessages(prev => {
             const updated = [...prev]
@@ -333,7 +378,7 @@ export default function HomePage() {
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, userToken, messages, contextReady, refreshContext, handleTimerFromResponse])
+  }, [input, streaming, userToken, messages, contextReady, refreshContext, handleTimerFromResponse, handleMapFromResponse])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -496,7 +541,11 @@ export default function HomePage() {
                 </div>
               )}
               {messages.map((msg, i) => {
-                const displayContent = msg.content.replace(/\s*__TIMER__:\d+:.+$/m, '').trim()
+                const displayContent = msg.content
+                  .replace(/\s*__TIMER__:\d+(?:\.\d+)?:[^\n]+/gm, '')
+                  .replace(/\s*__MAP_PLACES__:\[[\s\S]+?\](?:\n|$)/gm, '')
+                  .replace(/\s*__MAP_ROUTE__:\{[\s\S]+?\}(?:\n|$)/gm, '')
+                  .trim()
                 return (
                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                     <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
@@ -511,6 +560,16 @@ export default function HomePage() {
                         key={`timer-${activeTimer.msgIndex}`}
                         label={activeTimer.label}
                         seconds={activeTimer.seconds}
+                      />
+                    )}
+                    {activeMap && activeMap.msgIndex === i && (
+                      <MapWidget
+                        key={`map-${activeMap.msgIndex}`}
+                        places={activeMap.places}
+                        route={activeMap.route}
+                        userLat={activeMap.userLat}
+                        userLng={activeMap.userLng}
+                        title={activeMap.title}
                       />
                     )}
                   </div>
@@ -587,6 +646,7 @@ function InlineTimer({ label, seconds }: { label: string; seconds: number }) {
   const [done, setDone] = useState(false)
   const doneRef = useRef(false)
 
+  // Countdown tick — only touches state, no browser APIs
   useEffect(() => {
     if (doneRef.current) return
     const interval = setInterval(() => {
@@ -596,36 +656,6 @@ function InlineTimer({ label, seconds }: { label: string; seconds: number }) {
           if (!doneRef.current) {
             doneRef.current = true
             setDone(true)
-            try {
-              const AC = window.AudioContext || (window as any).webkitAudioContext
-              if (AC) {
-                const ctx = new AC()
-                ;[523.25, 659.25, 783.99].forEach((freq, i) => {
-                  const osc = ctx.createOscillator()
-                  const gain = ctx.createGain()
-                  osc.connect(gain)
-                  gain.connect(ctx.destination)
-                  osc.frequency.value = freq
-                  osc.type = 'sine'
-                  const t = ctx.currentTime + i * 0.4
-                  gain.gain.setValueAtTime(0, t)
-                  gain.gain.linearRampToValueAtTime(0.3, t + 0.05)
-                  gain.gain.linearRampToValueAtTime(0, t + 0.8)
-                  osc.start(t)
-                  osc.stop(t + 0.8)
-                })
-                setTimeout(() => ctx.close(), 3000)
-              }
-            } catch {}
-            try {
-              window.speechSynthesis?.cancel()
-              window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
-            } catch {}
-            try {
-              if (Notification.permission === 'granted') {
-                new Notification('⏰ JARVIS', { body: `${label} — done!` })
-              }
-            } catch {}
           }
           return 0
         }
@@ -634,6 +664,44 @@ function InlineTimer({ label, seconds }: { label: string; seconds: number }) {
     }, 1000)
     return () => clearInterval(interval)
   }, [label, seconds])
+
+  // Fire audio/speech/notification after done state is committed
+  useEffect(() => {
+    if (!done) return
+    // Chime
+    try {
+      const AC = window.AudioContext || (window as any).webkitAudioContext
+      if (AC) {
+        const ctx = new AC()
+        ;[523.25, 659.25, 783.99].forEach((freq, i) => {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.connect(gain)
+          gain.connect(ctx.destination)
+          osc.frequency.value = freq
+          osc.type = 'sine'
+          const t = ctx.currentTime + i * 0.4
+          gain.gain.setValueAtTime(0, t)
+          gain.gain.linearRampToValueAtTime(0.3, t + 0.05)
+          gain.gain.linearRampToValueAtTime(0, t + 0.8)
+          osc.start(t)
+          osc.stop(t + 0.8)
+        })
+        setTimeout(() => ctx.close(), 3000)
+      }
+    } catch {}
+    // Speech
+    try {
+      window.speechSynthesis?.cancel()
+      window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+    } catch {}
+    // Notification
+    try {
+      if (Notification.permission === 'granted') {
+        new Notification('⏰ JARVIS', { body: `${label} — done!` })
+      }
+    } catch {}
+  }, [done, label])
 
   const mins = Math.floor(remaining / 60)
   const secs = remaining % 60
