@@ -172,6 +172,269 @@ class JARVISAgent(Agent):
         except Exception as e:
             return f"Couldn't calculate that: {e}"
 
+    @function_tool
+    async def add_person_to_network(
+        self,
+        context: RunContext,
+        name: str,
+        relationship_type: str,
+        notes: str = None,
+        birthday: str = None,
+    ) -> str:
+        """
+        Add a new person to the user's relationship memory.
+        Call this when the user says things like:
+        'add X to my people', 'remember my friend X',
+        'X is my colleague', 'meet my sister X'.
+
+        Args:
+            name: The person's full name
+            relationship_type: friend, family, colleague, mentor, or acquaintance
+            notes: Any details about them — job, how you know them, personality
+            birthday: Their birthday in YYYY-MM-DD format if mentioned
+        """
+        try:
+            from backend.tools.relationship_tools import embed_text
+            db = get_supabase()
+
+            circle = "inner" if relationship_type in ["family", "friend"] else "community"
+            person_data = {
+                "user_id": self._user_id,
+                "name": name,
+                "relationship_type": relationship_type,
+                "circle": circle,
+                "tags": [],
+            }
+            if birthday:
+                person_data["birthday"] = birthday
+
+            res = db.table("people").insert(person_data).execute()
+            person = res.data[0] if res.data else {}
+            person_id = person.get("id")
+
+            if notes and person_id:
+                embedding = await embed_text(notes)
+                note_row = {
+                    "user_id": self._user_id,
+                    "person_id": person_id,
+                    "content": notes,
+                    "source": "chat_extraction",
+                }
+                if embedding:
+                    note_row["embedding"] = embedding
+                db.table("relationship_notes").insert(note_row).execute()
+
+            logger.info(f"[livekit] Added person: {name}")
+            return f"Got it, I've added {name} to your people."
+        except Exception as e:
+            logger.error(f"[livekit] add_person error: {e}")
+            return f"I had trouble adding {name}. Please try again."
+
+    @function_tool
+    async def remember_about_person(
+        self,
+        context: RunContext,
+        person_name: str,
+        note: str,
+    ) -> str:
+        """
+        Save a note or memory about someone the user knows.
+        Call this when the user shares information about a person:
+        'Cherry got a new job', 'Vincent is moving to Abuja',
+        'remember that Malik likes football'.
+
+        Args:
+            person_name: The name of the person
+            note: The information to remember about them
+        """
+        try:
+            from backend.tools.relationship_tools import embed_text
+            db = get_supabase()
+
+            res = db.table("people")\
+                .select("id, name")\
+                .eq("user_id", self._user_id)\
+                .ilike("name", f"%{person_name}%")\
+                .limit(1)\
+                .execute()
+
+            if not res.data:
+                return f"I don't have {person_name} in your people yet. Want me to add them first?"
+
+            person_id = res.data[0]["id"]
+            embedding = await embed_text(note)
+            note_row = {
+                "user_id": self._user_id,
+                "person_id": person_id,
+                "content": note,
+                "source": "chat_extraction",
+            }
+            if embedding:
+                note_row["embedding"] = embedding
+            db.table("relationship_notes").insert(note_row).execute()
+
+            return f"Noted — I'll remember that about {person_name}."
+        except Exception as e:
+            return f"Couldn't save that note: {e}"
+
+    @function_tool
+    async def recall_person(self, context: RunContext, person_name: str) -> str:
+        """
+        Recall everything known about a person from relationship memory.
+        Call this when the user asks about someone:
+        'what do you know about Cherry?', 'tell me about Vincent',
+        'who is Malik?'.
+
+        Args:
+            person_name: The name of the person to look up
+        """
+        try:
+            db = get_supabase()
+
+            person_res = db.table("people")\
+                .select("*")\
+                .eq("user_id", self._user_id)\
+                .ilike("name", f"%{person_name}%")\
+                .limit(1)\
+                .execute()
+
+            if not person_res.data:
+                return f"I don't have anyone called {person_name} in your network."
+
+            p = person_res.data[0]
+            person_id = p["id"]
+
+            notes_res = db.table("relationship_notes")\
+                .select("content")\
+                .eq("person_id", person_id)\
+                .order("created_at", desc=True)\
+                .limit(3)\
+                .execute()
+
+            notes = [n["content"] for n in (notes_res.data or [])]
+
+            summary = f"{p['name']} is your {p['relationship_type']}."
+            if p.get("birthday"):
+                summary += f" Birthday: {p['birthday']}."
+            if notes:
+                summary += f" Notes: {' '.join(notes[:2])}"
+
+            return summary
+        except Exception as e:
+            return f"Couldn't recall {person_name}: {e}"
+
+    @function_tool
+    async def add_goal(self, context: RunContext, title: str, urgency: str = "medium") -> str:
+        """
+        Add a new goal for the user.
+        Call this when the user says 'add a goal', 'I want to achieve X',
+        'set a goal to X'.
+
+        Args:
+            title: The goal description
+            urgency: low, medium, or high
+        """
+        try:
+            from datetime import datetime, timezone
+            db = get_supabase()
+            db.table("goals").insert({
+                "user_id": self._user_id,
+                "title": title,
+                "urgency": urgency,
+                "status": "active",
+                "last_touched_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+            return f"Goal added: {title}."
+        except Exception as e:
+            return f"Couldn't add that goal: {e}"
+
+    @function_tool
+    async def send_to_nudge_panel(
+        self,
+        context: RunContext,
+        message: str,
+        priority: str = "medium",
+    ) -> str:
+        """
+        Add an item to the user's nudge panel for them to see later.
+        Call this when the user says 'add this to my nudges',
+        'remind me in the app', 'put this in my panel'.
+
+        Args:
+            message: The nudge message to display
+            priority: low, medium, or high
+        """
+        try:
+            from datetime import datetime, timezone
+            db = get_supabase()
+            db.table("nudge_history").insert({
+                "user_id": self._user_id,
+                "nudge_type": "general",
+                "message": message,
+                "priority": priority,
+                "delivered_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+            return "Added to your nudge panel."
+        except Exception as e:
+            return f"Couldn't add nudge: {e}"
+
+    @function_tool
+    async def find_nearby_places(
+        self,
+        context: RunContext,
+        place_type: str = "restaurant",
+    ) -> str:
+        """
+        Find places near the user's current location.
+        Call this when the user asks 'find me a restaurant nearby',
+        'is there an ATM near me?', 'where's the nearest pharmacy?'
+
+        Args:
+            place_type: restaurant, pharmacy, atm, fuel, bank, hospital, supermarket
+        """
+        try:
+            ws = await cache_get(self._user_id)
+            if not ws:
+                return "I don't have your location yet."
+
+            meta = ws.get("_meta", {})
+            lat = meta.get("lat")
+            lng = meta.get("lng")
+            if not lat or not lng:
+                return "I can't get your exact location right now."
+
+            type_map = {
+                "restaurant": ("amenity", "restaurant"),
+                "pharmacy":   ("amenity", "pharmacy"),
+                "atm":        ("amenity", "atm"),
+                "fuel":       ("amenity", "fuel"),
+                "bank":       ("amenity", "bank"),
+                "hospital":   ("amenity", "hospital"),
+                "supermarket": ("shop", "supermarket"),
+            }
+            tag_key, tag_val = type_map.get(place_type.lower(), ("amenity", place_type))
+            query = (
+                f'[out:json][timeout:10];'
+                f'(node["{tag_key}"="{tag_val}"](around:1000,{lat},{lng}););'
+                f'out center 5;'
+            )
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://overpass-api.de/api/interpreter",
+                    data={"data": query},
+                    timeout=12.0,
+                )
+                data = r.json()
+
+            elements = [e for e in data.get("elements", []) if e.get("tags", {}).get("name")][:3]
+            if not elements:
+                return f"I couldn't find any {place_type}s nearby right now."
+
+            names = [e["tags"]["name"] for e in elements]
+            return f"Nearby {place_type}s: {', '.join(names)}."
+        except Exception as e:
+            return f"Couldn't search nearby places: {e}"
+
 
 async def get_user_context(user_id: str) -> str:
     """Fetch user profile and world state for the system prompt."""
