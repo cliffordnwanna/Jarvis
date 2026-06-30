@@ -23,7 +23,6 @@ export default function HomePage() {
   const [nudges, setNudges] = useState<Nudge[]>([])
   const [worldState, setWorldState] = useState<WorldState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
-  const [isVoiceMode, setIsVoiceMode] = useState(false)
   const [userToken, setUserToken] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -136,50 +135,15 @@ export default function HomePage() {
           if (stateRes.ok) setWorldState(await stateRes.json())
         }
       },
-      async (err) => {
+      (err) => {
         console.warn('[syncLocation] geolocation error:', err.message)
-        // Fall through to refreshContext which handles cached/default gracefully
-        await refreshContext()
       }
     )
-  }, [refreshContext])
+  }, [])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  // Fix 1: reliable speakText — only fires after stream ends, voices loaded
-  const speakText = useCallback((text: string) => {
-    if (!window.speechSynthesis) return
-    window.speechSynthesis.cancel()
-    const clean = text
-      .replace(/\[TIMER:[^\]]+\]/g, '')
-      .replace(/\*\*/g, '')
-      .replace(/\*/g, '')
-      .replace(/#{1,6}\s/g, '')
-      .trim()
-    if (!clean) return
-
-    const speak = () => {
-      const utterance = new SpeechSynthesisUtterance(clean)
-      utterance.rate = 1.05
-      utterance.pitch = 1.0
-      utterance.volume = 1.0
-      const voices = window.speechSynthesis.getVoices()
-      const preferred = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
-        || voices.find(v => v.lang.startsWith('en') && !v.localService)
-        || voices.find(v => v.lang.startsWith('en'))
-      if (preferred) utterance.voice = preferred
-      utterance.onerror = (e) => console.log('Speech error:', e)
-      window.speechSynthesis.speak(utterance)
-    }
-
-    if (window.speechSynthesis.getVoices().length === 0) {
-      window.speechSynthesis.onvoiceschanged = speak
-    } else {
-      speak()
-    }
-  }, [])
 
   const handleTimerFromResponse = useCallback((response: string) => {
     const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
@@ -249,17 +213,13 @@ export default function HomePage() {
             return updated
           })
         }
-        // Fix 1: only speak if triggered via voice
-        if (isVoiceMode) {
-          speakText(cleaned || assistantContent)
-        }
       }
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again.' }])
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, userToken, messages, handleTimerFromResponse, speakText, isVoiceMode])
+  }, [input, streaming, userToken, messages, handleTimerFromResponse])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -267,10 +227,6 @@ export default function HomePage() {
       sendMessage()
     }
   }
-
-  const worldContext = worldState
-    ? `Time: ${worldState.temporal?.day_of_week} ${worldState.temporal?.time_of_day}. Location: ${worldState.location?.city}. Weather: ${worldState.environment?.weather?.temp_c}°C ${worldState.environment?.weather?.condition}.`
-    : 'No world context available yet.'
 
   const weather = worldState?.environment?.weather
   const location = worldState?.location
@@ -408,16 +364,13 @@ export default function HomePage() {
           <div className="flex flex-col items-center justify-center h-full gap-6 px-4">
             <p className="text-jarvis-muted text-sm">Voice mode active</p>
             <VoiceMode
-              worldStateContext={worldContext}
               userToken={userToken}
               onTranscript={(text, role) => {
-                // VoiceMode handles its own agent call + speech internally.
-                // onTranscript here is display-only — append to chat log.
                 setMessages(prev => [...prev, { role, content: text }])
               }}
             />
             <button
-              onClick={() => { setVoiceActive(false); setIsVoiceMode(false); window.speechSynthesis?.cancel() }}
+              onClick={() => { setVoiceActive(false); window.speechSynthesis?.cancel() }}
               className="text-xs text-jarvis-muted hover:text-jarvis-text transition-colors"
             >
               Switch to text
@@ -461,7 +414,7 @@ export default function HomePage() {
                 />
                 {userToken && (
                   <button
-                    onClick={() => { setIsVoiceMode(true); setVoiceActive(true) }}
+                    onClick={() => setVoiceActive(true)}
                     className="p-2 rounded-xl bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted hover:text-jarvis-accent shrink-0"
                     title="Voice mode"
                   >

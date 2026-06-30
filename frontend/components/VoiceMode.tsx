@@ -1,310 +1,176 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { Mic, PhoneOff, MicOff } from 'lucide-react'
+import { useRef, useState, useCallback } from 'react'
+import { Mic, MicOff, Square } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 
 interface VoiceModeProps {
-  worldStateContext: string
   userToken: string
   onTranscript?: (text: string, role: 'user' | 'assistant') => void
 }
 
+type VoiceStatus = 'idle' | 'listening' | 'thinking' | 'speaking'
+
 const JARVIS_URL = process.env.NEXT_PUBLIC_JARVIS_URL || 'http://localhost:8000'
 
-const JARVIS_SYSTEM_PROMPT = `You are JARVIS — a proactive personal AI. Not a chatbot.
-You know the user's world and their people. You speak like a smart, warm friend.
-Be direct. Be concise. No filler phrases. No "As an AI..." disclaimers.
-Keep responses short in voice mode — 2-3 sentences max unless asked for more.`
-
-// --- OpenAI Realtime (WebRTC) mode ---
-
-function RealtimeVoice({ worldStateContext, userToken, onTranscript, onFallback }: VoiceModeProps & { onFallback: () => void }) {
-  const [isConnected, setIsConnected] = useState(false)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [isSpeaking, setIsSpeaking] = useState(false)
-  const [isListening, setIsListening] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
-  const dataChannelRef = useRef<RTCDataChannel | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-
-  const disconnect = useCallback(() => {
-    dataChannelRef.current?.close()
-    peerConnectionRef.current?.close()
-    streamRef.current?.getTracks().forEach(t => t.stop())
-    if (audioRef.current) audioRef.current.srcObject = null
-    dataChannelRef.current = null
-    peerConnectionRef.current = null
-    streamRef.current = null
-    setIsConnected(false)
-    setIsSpeaking(false)
-    setIsListening(false)
-    setError(null)
-  }, [])
-
-  const connect = useCallback(async () => {
-    setIsConnecting(true)
-    setError(null)
-    try {
-      const tokenRes = await fetch(`${JARVIS_URL}/voice/token`, {
-        headers: { Authorization: `Bearer ${userToken}` }
-      })
-      if (!tokenRes.ok) {
-        onFallback()
-        return
-      }
-      const { client_secret } = await tokenRes.json()
-
-      const pc = new RTCPeerConnection()
-      peerConnectionRef.current = pc
-
-      if (!audioRef.current) {
-        audioRef.current = document.createElement('audio')
-        audioRef.current.autoplay = true
-        document.body.appendChild(audioRef.current)
-      }
-      pc.ontrack = (e) => { if (audioRef.current && e.streams[0]) audioRef.current.srcObject = e.streams[0] }
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-      stream.getTracks().forEach(track => pc.addTrack(track, stream))
-
-      const dc = pc.createDataChannel('oai-events')
-      dataChannelRef.current = dc
-
-      dc.onopen = () => {
-        dc.send(JSON.stringify({
-          type: 'session.update',
-          session: {
-            modalities: ['text', 'audio'],
-            instructions: JARVIS_SYSTEM_PROMPT + '\n\nCurrent context:\n' + worldStateContext,
-            voice: 'alloy',
-            input_audio_format: 'pcm16',
-            output_audio_format: 'pcm16',
-            turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
-            temperature: 0.8,
-          }
-        }))
-        setIsConnected(true)
-        setIsConnecting(false)
-        setIsListening(true)
-      }
-
-      dc.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data)
-          if (event.type === 'input_audio_buffer.speech_started') { setIsListening(true); setIsSpeaking(false) }
-          if (event.type === 'response.audio.delta') { setIsSpeaking(true); setIsListening(false) }
-          if (event.type === 'response.audio.done') { setIsSpeaking(false); setIsListening(true) }
-          if (event.type === 'conversation.item.completed') {
-            const t = event.item?.content?.[0]?.transcript
-            if (t && onTranscript) onTranscript(t, 'assistant')
-          }
-          if (event.type === 'conversation.item.created') {
-            const t = event.item?.content?.[0]?.transcript
-            if (t && onTranscript) onTranscript(t, 'user')
-          }
-          if (event.type === 'error') setError(event.error?.message || 'Voice error')
-        } catch (_) {}
-      }
-
-      dc.onclose = () => disconnect()
-
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-
-      const sdpRes = await fetch('https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${client_secret.value}`, 'Content-Type': 'application/sdp' },
-        body: offer.sdp
-      })
-      if (!sdpRes.ok) throw new Error('WebRTC negotiation failed')
-      await pc.setRemoteDescription({ type: 'answer' as RTCSdpType, sdp: await sdpRes.text() })
-
-    } catch (err: any) {
-      setError(err.message)
-      setIsConnecting(false)
-      disconnect()
-    }
-  }, [userToken, worldStateContext, disconnect, onTranscript, onFallback])
-
-  useEffect(() => () => { disconnect() }, [disconnect])
-
-  if (!isConnected) {
-    return (
-      <div className="flex flex-col items-center gap-3">
-        <button onClick={connect} disabled={isConnecting}
-          className={`flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-all ${isConnecting ? 'bg-gray-700 text-gray-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg'}`}>
-          <Mic size={18} />
-          {isConnecting ? 'Connecting...' : 'Talk to JARVIS'}
-        </button>
-        {error && <p className="text-xs text-red-400">{error}</p>}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col items-center gap-3">
-      <div className="relative flex items-center justify-center w-20 h-20">
-        {(isSpeaking || isListening) && (
-          <>
-            <div className={`absolute inset-0 rounded-full animate-ping opacity-20 ${isSpeaking ? 'bg-blue-400' : 'bg-green-400'}`} />
-            <div className={`absolute inset-2 rounded-full animate-ping opacity-30 ${isSpeaking ? 'bg-blue-400' : 'bg-green-400'}`} />
-          </>
-        )}
-        <button onClick={disconnect}
-          className={`relative z-10 flex items-center justify-center w-14 h-14 rounded-full transition-all ${isSpeaking ? 'bg-blue-600 shadow-lg shadow-blue-500/40' : isListening ? 'bg-green-600 shadow-lg shadow-green-500/40' : 'bg-gray-700'}`}>
-          <PhoneOff size={20} className="text-white" />
-        </button>
-      </div>
-      <p className="text-sm text-gray-400">{isSpeaking ? 'JARVIS is speaking...' : isListening ? 'Listening...' : 'Connected'}</p>
-      <p className="text-xs text-gray-600">Tap to end call</p>
-    </div>
-  )
+async function getToken(): Promise<string | null> {
+  const { data: { session } } = await supabase.auth.getSession()
+  return session?.access_token || null
 }
 
-// --- Web Speech API fallback mode ---
+function speak(text: string, onDone: () => void) {
+  const cleaned = text
+    .replace(/\[TIMER:[^\]]+\]/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/#{1,6}\s/g, '')
+    .trim()
+  if (!cleaned || !window.speechSynthesis) { onDone(); return }
+  window.speechSynthesis.cancel()
+  const utter = new SpeechSynthesisUtterance(cleaned)
+  utter.rate = 1.05
+  utter.pitch = 1.0
+  utter.volume = 1.0
+  utter.onend = onDone
+  utter.onerror = onDone
+  const voices = window.speechSynthesis.getVoices()
+  const preferred =
+    voices.find(v => v.lang.startsWith('en') && !v.localService) ||
+    voices.find(v => v.lang.startsWith('en'))
+  if (preferred) utter.voice = preferred
+  window.speechSynthesis.speak(utter)
+}
 
-function SpeechAPIVoice({ userToken, onTranscript }: { userToken: string; onTranscript?: (text: string, role: 'user' | 'assistant') => void }) {
-  const [isListening, setIsListening] = useState(false)
-  const [isSpeaking, setIsSpeaking] = useState(false)
-  const [status, setStatus] = useState('Ready')
+export function VoiceMode({ onTranscript }: VoiceModeProps) {
+  const [status, setStatus] = useState<VoiceStatus>('idle')
+  const [error, setError] = useState<string | null>(null)
   const recognitionRef = useRef<any>(null)
 
-  const speak = useCallback((text: string) => {
-    if (!window.speechSynthesis) return
-    window.speechSynthesis.cancel()
-    const clean = text
-      .replace(/\[TIMER:[^\]]+\]/g, '')
-      .replace(/\*\*/g, '').replace(/\*/g, '')
-      .replace(/#{1,6}\s/g, '').trim()
-    if (!clean) return
-
-    const doSpeak = () => {
-      setIsSpeaking(true)
-      const utt = new SpeechSynthesisUtterance(clean)
-      utt.rate = 1.05
-      utt.pitch = 1.0
-      utt.volume = 1.0
-      const voices = window.speechSynthesis.getVoices()
-      const preferred = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
-        || voices.find(v => v.lang.startsWith('en') && !v.localService)
-        || voices.find(v => v.lang.startsWith('en'))
-      if (preferred) utt.voice = preferred
-      utt.onend = () => setIsSpeaking(false)
-      utt.onerror = (e) => { console.log('Speech error:', e); setIsSpeaking(false) }
-      window.speechSynthesis.speak(utt)
-    }
-
-    if (window.speechSynthesis.getVoices().length === 0) {
-      window.speechSynthesis.onvoiceschanged = doSpeak
-    } else {
-      doSpeak()
-    }
+  const stop = useCallback(() => {
+    recognitionRef.current?.stop()
+    window.speechSynthesis?.cancel()
+    setStatus('idle')
   }, [])
 
-  const sendToAgent = useCallback(async (transcript: string) => {
-    if (onTranscript) onTranscript(transcript, 'user')
-    setStatus('Thinking...')
-    try {
-      const res = await fetch(`${JARVIS_URL}/agent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
-        body: JSON.stringify({ messages: [{ role: 'user', content: transcript }] }),
-      })
-      if (!res.ok || !res.body) { setStatus('Error'); return }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let full = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        for (const line of decoder.decode(value).split('\n')) {
-          if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-            try { full += JSON.parse(line.slice(6)).content || '' } catch (_) {}
-          }
-        }
-      }
-      if (full) {
-        if (onTranscript) onTranscript(full, 'assistant')
-        speak(full)
-      }
-      setStatus('Ready')
-    } catch { setStatus('Error') }
-  }, [userToken, onTranscript, speak])
-
   const startListening = useCallback(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) { setStatus('Speech API not supported in this browser'); return }
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setError('Speech recognition not supported in this browser')
+      return
+    }
 
+    setError(null)
     const rec = new SpeechRecognition()
     rec.lang = 'en-US'
     rec.interimResults = false
     rec.maxAlternatives = 1
     recognitionRef.current = rec
 
-    rec.onstart = () => { setIsListening(true); setStatus('Listening...') }
-    rec.onresult = (e: any) => {
-      const transcript = e.results[0][0].transcript
-      setIsListening(false)
-      sendToAgent(transcript)
-    }
-    rec.onerror = (e: any) => { setIsListening(false); setStatus(`Error: ${e.error}`) }
-    rec.onend = () => setIsListening(false)
-    rec.start()
-  }, [sendToAgent])
+    rec.onstart = () => setStatus('listening')
 
-  const stop = useCallback(() => {
-    recognitionRef.current?.stop()
-    window.speechSynthesis.cancel()
-    setIsListening(false)
-    setIsSpeaking(false)
-    setStatus('Ready')
-  }, [])
+    rec.onresult = async (e: any) => {
+      const transcript = e.results[0][0].transcript
+      if (onTranscript) onTranscript(transcript, 'user')
+      setStatus('thinking')
+
+      try {
+        const token = await getToken()
+        if (!token) { setStatus('idle'); setError('Not signed in'); return }
+
+        const res = await fetch(`${JARVIS_URL}/agent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ messages: [{ role: 'user', content: transcript }] }),
+        })
+        if (!res.ok || !res.body) { setStatus('idle'); setError('Agent error'); return }
+
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let full = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          for (const line of decoder.decode(value).split('\n')) {
+            if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+              try { full += JSON.parse(line.slice(6)).content || '' } catch (_) {}
+            }
+          }
+        }
+
+        if (full && onTranscript) onTranscript(full, 'assistant')
+
+        setStatus('speaking')
+        speak(full || '', () => setStatus('idle'))
+      } catch (err: any) {
+        setError(err.message || 'Something went wrong')
+        setStatus('idle')
+      }
+    }
+
+    rec.onerror = (e: any) => {
+      setError(e.error === 'no-speech' ? 'No speech detected' : `Error: ${e.error}`)
+      setStatus('idle')
+    }
+
+    rec.onend = () => {
+      // Only reset to idle if we haven't moved on to thinking/speaking
+      setStatus(prev => prev === 'listening' ? 'idle' : prev)
+    }
+
+    rec.start()
+  }, [onTranscript])
+
+  const isActive = status === 'listening' || status === 'speaking'
 
   return (
     <div className="flex flex-col items-center gap-4">
+      {/* Mic button */}
       <div className="relative flex items-center justify-center w-20 h-20">
-        {(isListening || isSpeaking) && (
-          <div className={`absolute inset-0 rounded-full animate-ping opacity-20 ${isSpeaking ? 'bg-blue-400' : 'bg-green-400'}`} />
+        {isActive && (
+          <>
+            <div className={`absolute inset-0 rounded-full animate-ping opacity-20 ${status === 'speaking' ? 'bg-blue-400' : 'bg-red-400'}`} />
+            <div className={`absolute inset-2 rounded-full animate-ping opacity-30 ${status === 'speaking' ? 'bg-blue-400' : 'bg-red-400'}`} />
+          </>
+        )}
+        {status === 'thinking' && (
+          <div className="absolute inset-0 rounded-full border-2 border-yellow-500/40 border-t-yellow-400 animate-spin" />
         )}
         <button
-          onClick={isListening || isSpeaking ? stop : startListening}
+          onClick={status === 'idle' ? startListening : stop}
           className={`relative z-10 flex items-center justify-center w-14 h-14 rounded-full transition-all ${
-            isListening ? 'bg-green-600 shadow-lg shadow-green-500/40'
-            : isSpeaking ? 'bg-blue-600 shadow-lg shadow-blue-500/40'
+            status === 'listening' ? 'bg-red-600 shadow-lg shadow-red-500/40'
+            : status === 'speaking' ? 'bg-blue-600 shadow-lg shadow-blue-500/40'
+            : status === 'thinking' ? 'bg-yellow-700 cursor-wait'
             : 'bg-gray-700 hover:bg-gray-600'
           }`}
         >
-          {isListening || isSpeaking ? <MicOff size={20} className="text-white" /> : <Mic size={20} className="text-white" />}
+          {status === 'idle'
+            ? <Mic size={20} className="text-white" />
+            : isActive
+            ? <Square size={16} className="text-white" />
+            : <MicOff size={20} className="text-white" />
+          }
         </button>
       </div>
-      <p className="text-sm text-gray-400">{status}</p>
-      <p className="text-xs text-gray-600">
-        {isListening ? 'Speak now...' : isSpeaking ? 'JARVIS is speaking...' : 'Tap to speak'}
+
+      {/* Status label */}
+      <p className="text-sm text-gray-400">
+        {status === 'idle' && 'Tap to talk'}
+        {status === 'listening' && 'Listening...'}
+        {status === 'thinking' && 'Thinking...'}
+        {status === 'speaking' && 'Speaking...'}
       </p>
-      <p className="text-xs text-gray-700">Using browser speech (Realtime API unavailable)</p>
+
+      {/* Stop hint when active */}
+      {status !== 'idle' && (
+        <button onClick={stop} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">
+          Stop
+        </button>
+      )}
+
+      {/* Error */}
+      {error && <p className="text-xs text-red-400 text-center max-w-[200px]">{error}</p>}
     </div>
-  )
-}
-
-// --- Main export: tries Realtime first, falls back to Web Speech ---
-
-export function VoiceMode({ worldStateContext, userToken, onTranscript }: VoiceModeProps) {
-  const [useFallback, setUseFallback] = useState(false)
-
-  if (useFallback) {
-    return <SpeechAPIVoice userToken={userToken} onTranscript={onTranscript} />
-  }
-
-  return (
-    <RealtimeVoice
-      worldStateContext={worldStateContext}
-      userToken={userToken}
-      onTranscript={onTranscript}
-      onFallback={() => setUseFallback(true)}
-    />
   )
 }
