@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState, useCallback } from 'react'
-import { Mic, Square } from 'lucide-react'
+import { Mic, MicOff, Square } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 
 interface VoiceModeProps {
@@ -53,6 +53,26 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
   const [error, setError] = useState<string | null>(null)
   const recognitionRef = useRef<any>(null)
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const isSafari = typeof navigator !== 'undefined' &&
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+  const isIOS = typeof navigator !== 'undefined' &&
+    /iPad|iPhone|iPod/.test(navigator.userAgent)
+  const speechSupported = typeof window !== 'undefined' &&
+    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
+
+  if (!speechSupported) {
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center opacity-50">
+          <MicOff size={20} className="text-gray-500" />
+        </div>
+        <p className="text-xs text-gray-600 text-center max-w-[160px]">
+          Voice not supported in this browser
+        </p>
+      </div>
+    )
+  }
 
   const stop = useCallback(() => {
     if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
@@ -211,6 +231,12 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
       )}
 
       {error && <p className="text-xs text-red-400 text-center max-w-[200px]">{error}</p>}
+
+      {isIOS && isSafari && status === 'idle' && !error && (
+        <p className="text-xs text-gray-600 text-center max-w-[180px]">
+          Voice is limited on Safari — Chrome works best
+        </p>
+      )}
     </div>
   )
 }

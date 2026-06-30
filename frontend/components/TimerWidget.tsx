@@ -61,7 +61,7 @@ export function TimerWidget() {
   if (timers.length === 0) return null
 
   return (
-    <div className="fixed bottom-24 right-4 flex flex-col gap-2 z-50">
+    <div className="fixed bottom-20 left-1/2 -translate-x-1/2 flex flex-col gap-2 z-50 items-center">
       {timers.map(timer => {
         const remaining = Math.max(0, timer.endsAt - Date.now())
         const totalSeconds = Math.floor(remaining / 1000)

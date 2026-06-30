@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { NudgePanel } from '@/components/NudgePanel'
 import { VoiceMode } from '@/components/VoiceMode'
+import { TimerWidget } from '@/components/TimerWidget'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
 import type { Nudge, WorldState, Message } from '@/types'
@@ -213,17 +214,10 @@ export default function HomePage() {
 
   const handleTimerFromResponse = useCallback((response: string) => {
     const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
-    if (timerMatch) {
+    if (timerMatch && (window as any).__jarvisAddTimer) {
       const minutes = parseFloat(timerMatch[1])
       const label = timerMatch[2]
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: '',
-        type: 'timer',
-        timerLabel: label,
-        timerDurationMs: Math.round(minutes * 60 * 1000),
-      }])
+      ;(window as any).__jarvisAddTimer(label, Math.round(minutes * 60 * 1000))
     }
   }, [])
 
@@ -231,15 +225,12 @@ export default function HomePage() {
     const text = (overrideInput ?? input).trim()
     if (!text || streaming || !userToken) return
 
-    const userMsg: Message = { role: 'user', content: text, type: 'text' }
+    const userMsg: Message = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setStreaming(true)
 
-    // Only send text messages to agent — skip timer messages
-    const allMessages = [...messages, userMsg]
-      .filter(m => m.type !== 'timer')
-      .map(m => ({ role: m.role, content: m.content }))
+    const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }))
 
     try {
       const token = await getToken()
@@ -256,7 +247,7 @@ export default function HomePage() {
       const decoder = new TextDecoder()
       let assistantContent = ''
 
-      setMessages(prev => [...prev, { role: 'assistant', content: '', type: 'text' }])
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }])
 
       while (true) {
         const { done, value } = await reader.read()
@@ -462,22 +453,25 @@ export default function HomePage() {
                   <p className="text-jarvis-muted text-sm">What's on your mind?</p>
                 </div>
               )}
-              {messages.map((msg, i) => (
-                <div key={msg.id || i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
-                    msg.role === 'user'
-                      ? 'bg-jarvis-accent text-white rounded-br-sm'
-                      : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
-                  }`}>
-                    {msg.type === 'timer' && msg.timerLabel && msg.timerDurationMs
-                      ? <TimerMessage label={msg.timerLabel} durationMs={msg.timerDurationMs} />
-                      : msg.content || (streaming && i === messages.length - 1 ? '▋' : '')
-                    }
+              {messages.map((msg, i) => {
+                const displayContent = msg.content.replace(/\s*\[TIMER:[^\]]+\]/g, '').trim()
+                return (
+                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                      msg.role === 'user'
+                        ? 'bg-jarvis-accent text-white rounded-br-sm'
+                        : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
+                    }`}>
+                      {displayContent || (streaming && i === messages.length - 1 ? '▋' : '')}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
               <div ref={messagesEndRef} />
             </div>
+
+            {/* Timer widget — centered above input */}
+            <TimerWidget />
 
             {/* Input */}
             <div className="shrink-0 px-3 py-2 border-t border-jarvis-border bg-jarvis-surface">
@@ -542,42 +536,3 @@ function getTimeOfDay() {
   return 'evening'
 }
 
-function TimerMessage({ label, durationMs }: { label: string; durationMs: number }) {
-  const [remaining, setRemaining] = useState(durationMs)
-  const [done, setDone] = useState(false)
-
-  useEffect(() => {
-    if (done) return
-    const interval = setInterval(() => {
-      setRemaining(prev => {
-        if (prev <= 1000) {
-          clearInterval(interval)
-          setDone(true)
-          if (window.speechSynthesis) {
-            const u = new SpeechSynthesisUtterance(`Timer done: ${label}`)
-            window.speechSynthesis.speak(u)
-          }
-          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification('⏰ JARVIS Timer', { body: `${label} — done!` })
-          }
-          return 0
-        }
-        return prev - 1000
-      })
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [done, label])
-
-  const minutes = Math.floor(remaining / 60000)
-  const seconds = Math.floor((remaining % 60000) / 1000)
-  const timeStr = `${minutes}:${String(seconds).padStart(2, '0')}`
-
-  if (done) {
-    return <span className="flex items-center gap-2 text-green-400">⏰ {label} — Done! 🔔</span>
-  }
-  return (
-    <span className="flex items-center gap-2 text-blue-300">
-      ⏰ {label} — <span className="font-mono font-bold">{timeStr}</span> remaining
-    </span>
-  )
-}
