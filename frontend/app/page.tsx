@@ -23,6 +23,8 @@ export default function HomePage() {
   const [streaming, setStreaming] = useState(false)
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown')
   const [inlineTimer, setInlineTimer] = useState<{ label: string; endsAt: number; msgIndex: number } | null>(null)
+  const [currentTime, setCurrentTime] = useState<string>('')
+  const [contextReady, setContextReady] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const getToken = async (): Promise<string | null> => {
@@ -122,30 +124,34 @@ export default function HomePage() {
               },
               () => {} // silent fail — sensors.ts will use cached coords
             )
-            refreshContext()
+            await refreshContext()
+            setContextReady(true)
             return
           }
 
           if (result.state === 'denied') {
             // Explicitly denied — never ask again, use cached/default
             setLocationPermission('denied')
-            refreshContext()
+            await refreshContext()
+            setContextReady(true)
             return
           }
 
           // 'prompt' — first time, ask exactly once
           navigator.geolocation.getCurrentPosition(
-            (pos) => {
+            async (pos) => {
               localStorage.setItem('jarvis_last_gps', JSON.stringify({
                 lat: pos.coords.latitude,
                 lng: pos.coords.longitude,
               }))
               setLocationPermission('granted')
-              refreshContext()
+              await refreshContext()
+              setContextReady(true)
             },
-            () => {
+            async () => {
               setLocationPermission('denied')
-              refreshContext()
+              await refreshContext()
+              setContextReady(true)
             },
             { timeout: 10000, maximumAge: 0, enableHighAccuracy: false }
           )
@@ -158,19 +164,24 @@ export default function HomePage() {
         } catch {
           // permissions API not supported — just try once, browser decides
           navigator.geolocation.getCurrentPosition(
-            (pos) => {
+            async (pos) => {
               localStorage.setItem('jarvis_last_gps', JSON.stringify({
                 lat: pos.coords.latitude,
                 lng: pos.coords.longitude,
               }))
-              refreshContext()
+              await refreshContext()
+              setContextReady(true)
             },
-            () => refreshContext()
+            async () => {
+              await refreshContext()
+              setContextReady(true)
+            }
           )
         }
       } else {
         // No permissions API (older browsers) — just refresh with whatever we have
-        refreshContext()
+        await refreshContext()
+        setContextReady(true)
       }
     }
 
@@ -212,6 +223,18 @@ export default function HomePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => {
+    const updateClock = () => {
+      setCurrentTime(new Date().toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', hour12: true,
+        timeZone: 'Africa/Lagos',
+      }))
+    }
+    updateClock()
+    const interval = setInterval(updateClock, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   const handleTimerFromResponse = useCallback((response: string, msgIndex: number) => {
     // Detect __TIMER__:seconds:label sentinel from create_timer tool
     const timerMatch = response.match(/__TIMER__:(\d+):(.+)$/)
@@ -228,6 +251,12 @@ export default function HomePage() {
   const sendMessage = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput ?? input).trim()
     if (!text || streaming || !userToken) return
+
+    // First message after page load — ensure world state is posted before the agent reads it
+    if (!contextReady) {
+      await refreshContext()
+      setContextReady(true)
+    }
 
     const userMsg: Message = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
@@ -293,7 +322,7 @@ export default function HomePage() {
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, userToken, messages, handleTimerFromResponse])
+  }, [input, streaming, userToken, messages, contextReady, refreshContext, handleTimerFromResponse])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -419,15 +448,11 @@ export default function HomePage() {
                 <span className="text-gray-400">Tomorrow {wb.tomorrow_max_c}°C</span>
               </div>
             )}
-            <div className="flex items-center gap-1 px-3 py-2 ml-auto">
-              <span className="text-gray-500">
-                {tmp?.timestamp
-                  ? new Date(tmp.timestamp).toLocaleTimeString('en-US', {
-                      hour: '2-digit', minute: '2-digit', hour12: true,
-                    })
-                  : ''}
-              </span>
-            </div>
+            {currentTime && (
+              <div className="flex items-center gap-1 px-3 py-2 ml-auto">
+                <span className="text-gray-400 text-xs">{currentTime}</span>
+              </div>
+            )}
           </div>
         )
       })()}
@@ -547,6 +572,33 @@ function getTimeOfDay() {
   return 'evening'
 }
 
+function playTimerChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const tones = [523.25, 659.25, 783.99] // C5, E5, G5
+    tones.forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.frequency.value = freq
+      osc.type = 'sine'
+      const t0 = ctx.currentTime + i * 0.4
+      const t1 = t0 + 0.8
+      gain.gain.setValueAtTime(0, t0)
+      gain.gain.linearRampToValueAtTime(0.4, t0 + 0.05)
+      gain.gain.linearRampToValueAtTime(0, t1)
+      osc.start(t0)
+      osc.stop(t1)
+    })
+    setTimeout(() => ctx.close(), 3000)
+  } catch (e) {
+    console.log('Audio chime error:', e)
+  }
+}
+
 function InlineTimer({ label, endsAt, onDone }: { label: string; endsAt: number; onDone: () => void }) {
   const [remaining, setRemaining] = useState(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)))
   const [done, setDone] = useState(false)
@@ -557,7 +609,10 @@ function InlineTimer({ label, endsAt, onDone }: { label: string; endsAt: number;
         if (prev <= 1) {
           clearInterval(interval)
           setDone(true)
-          window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+          playTimerChime()
+          if (window.speechSynthesis) {
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+          }
           if (Notification.permission === 'granted') {
             new Notification('⏰ JARVIS', { body: `${label} — done!` })
           }

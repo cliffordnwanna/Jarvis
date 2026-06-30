@@ -397,9 +397,13 @@ class JARVISAgent(Agent):
             if not ws:
                 return "I don't have your location yet."
 
-            meta = ws.get("_meta", {})
-            lat = meta.get("lat")
-            lng = meta.get("lng")
+            location = ws.get("location", {})
+            lat = location.get("lat")
+            lng = location.get("lng")
+            if not lat:
+                meta = ws.get("_meta", {})
+                lat = meta.get("lat")
+                lng = meta.get("lng")
             if not lat or not lng:
                 return "I can't get your exact location right now."
 
@@ -434,6 +438,133 @@ class JARVISAgent(Agent):
             return f"Nearby {place_type}s: {', '.join(names)}."
         except Exception as e:
             return f"Couldn't search nearby places: {e}"
+
+    @function_tool
+    async def get_travel_time(self, context: RunContext, destination: str) -> str:
+        """
+        Get estimated travel time from current location to a destination.
+        Call this when user asks 'how long to get to X?',
+        'how far is X from here?', 'travel time to X'.
+
+        Args:
+            destination: The destination name or address
+        """
+        try:
+            ws = await cache_get(self._user_id)
+            if not ws:
+                return "I don't have your location yet."
+
+            location = ws.get("location", {})
+            lat = location.get("lat")
+            lng = location.get("lng")
+            if not lat or not lng:
+                return "I can't get your current location right now."
+
+            async with httpx.AsyncClient() as client:
+                geo = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": destination, "format": "json", "limit": 1},
+                    headers={"User-Agent": "JARVIS/1.0"},
+                    timeout=8.0,
+                )
+                geo_data = geo.json()
+                if not geo_data:
+                    return f"I couldn't find {destination} on the map."
+
+                dest_lat = float(geo_data[0]["lat"])
+                dest_lng = float(geo_data[0]["lon"])
+
+                route = await client.get(
+                    f"https://router.project-osrm.org/route/v1/driving/"
+                    f"{lng},{lat};{dest_lng},{dest_lat}",
+                    params={"overview": "false"},
+                    timeout=8.0,
+                )
+                route_data = route.json()
+
+            if route_data.get("routes"):
+                duration_s = route_data["routes"][0]["duration"]
+                distance_m = route_data["routes"][0]["distance"]
+                minutes = int(duration_s / 60)
+                km = round(distance_m / 1000, 1)
+                return f"It's about {minutes} minutes driving to {destination}, roughly {km} km away."
+            return f"Couldn't calculate route to {destination}."
+        except Exception as e:
+            return f"Travel time error: {e}"
+
+    @function_tool
+    async def update_goal(self, context: RunContext, goal_title: str, action: str) -> str:
+        """
+        Update, complete, or mark progress on an existing goal.
+        Call this when user says 'I completed X', 'mark X as done',
+        'I made progress on X', 'delete goal X'.
+
+        Args:
+            goal_title: The title or part of the title of the goal
+            action: complete, touch (mark worked on), or delete
+        """
+        try:
+            from datetime import datetime, timezone
+            db = get_supabase()
+            now = datetime.now(timezone.utc).isoformat()
+
+            res = db.table("goals")\
+                .select("id, title")\
+                .eq("user_id", self._user_id)\
+                .ilike("title", f"%{goal_title}%")\
+                .limit(1)\
+                .execute()
+
+            if not res.data:
+                return f"I couldn't find a goal matching '{goal_title}'."
+
+            goal = res.data[0]
+            goal_id = goal["id"]
+
+            if action == "complete":
+                db.table("goals").update({
+                    "status": "completed",
+                    "completed_at": now,
+                }).eq("id", goal_id).execute()
+                return f"Marked '{goal['title']}' as complete. Well done!"
+            elif action == "delete":
+                db.table("goals").delete().eq("id", goal_id).execute()
+                return f"Deleted goal: {goal['title']}."
+            else:
+                db.table("goals").update({
+                    "last_touched_at": now,
+                }).eq("id", goal_id).execute()
+                return f"Noted progress on '{goal['title']}'."
+        except Exception as e:
+            return f"Couldn't update goal: {e}"
+
+    @function_tool
+    async def list_people(self, context: RunContext) -> str:
+        """
+        List all people in the user's relationship network.
+        Call this when user asks 'who are my people?',
+        'who do I have saved?', 'list my contacts'.
+        """
+        try:
+            db = get_supabase()
+            res = db.table("people")\
+                .select("name, relationship_type")\
+                .eq("user_id", self._user_id)\
+                .order("created_at")\
+                .execute()
+
+            people = res.data or []
+            if not people:
+                return "You don't have anyone in your people network yet."
+
+            names = [f"{p['name']} ({p['relationship_type']})" for p in people[:5]]
+            total = len(people)
+            result = f"You have {total} people: {', '.join(names)}"
+            if total > 5:
+                result += f" and {total - 5} more."
+            return result
+        except Exception as e:
+            return f"Couldn't get your people: {e}"
 
 
 async def get_user_context(user_id: str) -> str:

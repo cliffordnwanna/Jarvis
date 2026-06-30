@@ -157,6 +157,13 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
 
     world_state = await cache_get(user_id)
 
+    # If cache is empty, the frontend may still be posting /context/update —
+    # wait briefly and retry once before building the system prompt
+    if not world_state:
+        import asyncio as _asyncio
+        await _asyncio.sleep(2)
+        world_state = await cache_get(user_id)
+
     # Use user's local timezone from cached world state if available
     user_tz_str = "UTC"
     if world_state:
