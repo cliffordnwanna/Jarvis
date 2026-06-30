@@ -1,7 +1,7 @@
 import os
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer, save_home_location
+from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer, set_named_location
 from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search, get_exchange_rate, calculate
 from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
@@ -58,7 +58,7 @@ Every fact the user shares about a person must be stored immediately.
 - get_nearby_places: restaurants, ATMs, pharmacies, fuel stations nearby
 - get_travel_eta: driving/walking/cycling time between two points
 - get_world_state: only if you need fresher data than what's injected above
-- save_home_location: when user says "set this as my home", "save my location as home", "remember this as home"
+- set_named_location: save home, work, or any named place. Use when user says "set this as my home/work", "my office is X", "remember this place as Y"
 
 ## Timers vs Reminders vs Nudges
 TIMER (any countdown — seconds to hours):
@@ -139,7 +139,7 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
         add_note_for_person,
         get_nearby_places,
         get_travel_eta,
-        save_home_location,
+        set_named_location,
         create_reminder,
     ]
 

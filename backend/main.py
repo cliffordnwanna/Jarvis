@@ -121,6 +121,10 @@ def get_graph(system_prompt: str = None):
 # Module-level cache — one DB hit per user per backend restart
 _user_profile_cache: dict = {}
 
+
+def bust_profile_cache(user_id: str) -> None:
+    _user_profile_cache.pop(user_id, None)
+
 async def get_user_profile(user_id: str) -> dict:
     if user_id in _user_profile_cache:
         return _user_profile_cache[user_id]
@@ -128,7 +132,7 @@ async def get_user_profile(user_id: str) -> dict:
     db = get_supabase()
     try:
         res = db.table("users")\
-            .select("display_name, timezone, morning_nudge_time, home_lat, home_lng")\
+            .select("display_name, timezone, morning_nudge_time, home_lat, home_lng, home_address, work_lat, work_lng, work_address")\
             .eq("id", user_id)\
             .maybe_single()\
             .execute()
@@ -236,6 +240,10 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
         else:
             rain_status = f"No rain. {int(rain_1h * 100)}% chance next hour."
 
+        lat = location.get("lat") or world_state.get("_meta", {}).get("lat")
+        lng = location.get("lng") or world_state.get("_meta", {}).get("lng")
+        coords_line = f"GPS coordinates: {lat}, {lng}\n" if lat and lng else ""
+
         world_context = f"""=== CURRENT DATE & TIME (USE THESE EXACT VALUES) ===
 Today is: {today_str}
 Current time: {time_str} ({user_tz_str})
@@ -260,6 +268,7 @@ City: {city}
 State: {state}
 Country: {country}
 Full location: {location_str}
+{coords_line}
 
 === CURRENT WEATHER ===
 Temperature: {temp_c}°C (feels like {feels_like}°C)
@@ -314,16 +323,25 @@ World state not available yet — user needs to grant location permission.
             print(f"[agent] Failed to load conversation summary: {e}")
 
     name_line = f"USER'S NAME: {user_name} — address them by this name.\n" if user_name else ""
-    home_lat = profile.get("home_lat")
-    home_lng = profile.get("home_lng")
+    home_lat  = profile.get("home_lat")
+    home_lng  = profile.get("home_lng")
+    home_addr = profile.get("home_address") or "Home"
+    work_lat  = profile.get("work_lat")
+    work_lng  = profile.get("work_lng")
+    work_addr = profile.get("work_address") or "Work"
     home_line = (
-        f"USER'S HOME COORDINATES: {home_lat}, {home_lng} — use these when asked for directions home.\n"
+        f"Home: {home_addr} (coordinates: {home_lat}, {home_lng})\n"
         if home_lat and home_lng else ""
+    )
+    work_line = (
+        f"Work: {work_addr} (coordinates: {work_lat}, {work_lng})\n"
+        if work_lat and work_lng else ""
     )
     system_prompt = (
         f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
         + name_line
         + home_line
+        + work_line
         + f"TODAY'S DATE: {today_str}\n"
         + f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
         + conversation_context
