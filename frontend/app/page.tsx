@@ -28,7 +28,13 @@ export default function HomePage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const getToken = async (): Promise<string | null> => {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token || null
+  }
 
   const checkOnboarding = useCallback(async (token: string) => {
     try {
@@ -62,15 +68,30 @@ export default function HomePage() {
     return () => subscription.unsubscribe()
   }, [router, checkOnboarding])
 
-  const refreshNudges = useCallback(async (token: string) => {
+  useEffect(() => {
+    if (!navigator.permissions) {
+      setLocationPermission('unknown')
+      return
+    }
+    navigator.permissions.query({ name: 'geolocation' as PermissionName }).then((result) => {
+      setLocationPermission(result.state as 'granted' | 'denied' | 'prompt')
+      result.onchange = () => setLocationPermission(result.state as 'granted' | 'denied' | 'prompt')
+    })
+  }, [])
+
+  const refreshNudges = useCallback(async () => {
     try {
+      const token = await getToken()
+      if (!token) return
       const res = await fetch(`${JARVIS_URL}/nudges`, { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setNudges(await res.json())
     } catch (_) {}
   }, [])
 
-  const refreshContext = useCallback(async (token: string) => {
+  const refreshContext = useCallback(async () => {
     try {
+      const token = await getToken()
+      if (!token) return
       const sensors = await collectSensors()
       const res = await fetch(`${JARVIS_URL}/context/update`, {
         method: 'POST',
@@ -81,7 +102,7 @@ export default function HomePage() {
         const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${token}` } })
         if (stateRes.ok) setWorldState(await stateRes.json())
       }
-      await refreshNudges(token)
+      await refreshNudges()
     } catch (e) {
       console.error('[context] error:', e)
     }
@@ -89,35 +110,39 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!userToken) return
-    refreshContext(userToken)
-    const interval = setInterval(() => refreshContext(userToken), 30 * 60 * 1000)
+    refreshContext()
+    const interval = setInterval(() => refreshContext(), 30 * 60 * 1000)
     return () => clearInterval(interval)
   }, [userToken, refreshContext])
 
-  const syncLocation = useCallback(() => {
-    if (!userToken) return
+  const syncLocation = useCallback(async () => {
+    const token = await getToken()
+    if (!token) return
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        const payload = { lat: pos.coords.latitude, lng: pos.coords.longitude, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+        const payload = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          location_accurate: true,
+        }
         const res = await fetch(`${JARVIS_URL}/context/update`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(payload),
         })
         if (res.ok) {
-          const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${userToken}` } })
+          const stateRes = await fetch(`${JARVIS_URL}/world-state`, { headers: { Authorization: `Bearer ${token}` } })
           if (stateRes.ok) setWorldState(await stateRes.json())
         }
       },
-      () => {
-        fetch(`${JARVIS_URL}/context/update`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
-          body: JSON.stringify({ lat: 6.5244, lng: 3.3792, timezone: 'Africa/Lagos' }),
-        })
+      async (err) => {
+        console.warn('[syncLocation] geolocation error:', err.message)
+        // Fall through to refreshContext which handles cached/default gracefully
+        await refreshContext()
       }
     )
-  }, [userToken])
+  }, [refreshContext])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -177,9 +202,11 @@ export default function HomePage() {
     const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }))
 
     try {
+      const token = await getToken()
+      if (!token) throw new Error('No auth token')
       const res = await fetch(`${JARVIS_URL}/agent`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ messages: allMessages }),
       })
 
@@ -279,6 +306,13 @@ export default function HomePage() {
           </button>
         </div>
       </header>
+
+      {/* Location denied banner */}
+      {locationPermission === 'denied' && (
+        <div className="bg-yellow-900/30 border-b border-yellow-700/30 px-4 py-2 text-xs text-yellow-400 flex items-center justify-between shrink-0">
+          <span>📍 Location access denied — using default Lagos location. Enable in browser settings for accurate weather.</span>
+        </div>
+      )}
 
       {/* Rich context bar */}
       {worldState && (() => {
