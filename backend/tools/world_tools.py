@@ -188,7 +188,7 @@ async def send_nudge(
 
 
 @tool
-async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 1000) -> list:
+async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 2000) -> list:
     """
     Find places near the user's current location using OpenStreetMap (free).
 
@@ -197,24 +197,29 @@ async def get_nearby_places(lat: float, lng: float, place_type: str = "restauran
     - "Is there a pharmacy near me?"
     - "Find me an ATM"
     - "What's near me?"
-    - "Where's the nearest hospital/fuel station/bank?"
+    - "Where's the nearest hospital/fuel station/bank/church?"
 
-    place_type options: restaurant, cafe, hotel, hospital, pharmacy, atm, fuel, bank, supermarket
-    radius: search radius in meters (default 1000m = 1km)
+    place_type options: restaurant, cafe, hotel, hospital, pharmacy, atm, fuel,
+                        bank, supermarket, church, mosque, school, police
+    radius: search radius in meters (default 2000m = 2km)
 
-    Returns list of places with name, type, and coordinates.
+    Returns list of places with name, lat, lng, and type.
     """
     type_map = {
         "restaurant": ("amenity", "restaurant"),
-        "cafe": ("amenity", "cafe"),
-        "pharmacy": ("amenity", "pharmacy"),
-        "atm": ("amenity", "atm"),
-        "fuel": ("amenity", "fuel"),
-        "hospital": ("amenity", "hospital"),
+        "cafe":       ("amenity", "cafe"),
+        "pharmacy":   ("amenity", "pharmacy"),
+        "atm":        ("amenity", "atm"),
+        "fuel":       ("amenity", "fuel"),
+        "hospital":   ("amenity", "hospital"),
         "supermarket": ("shop", "supermarket"),
-        "bank": ("amenity", "bank"),
-        "hotel": ("tourism", "hotel"),
+        "bank":       ("amenity", "bank"),
+        "hotel":      ("tourism", "hotel"),
         "guest_house": ("tourism", "guest_house"),
+        "church":     ("amenity", "place_of_worship"),
+        "mosque":     ("amenity", "place_of_worship"),
+        "school":     ("amenity", "school"),
+        "police":     ("amenity", "police"),
     }
     tag_key, tag_val = type_map.get(place_type.lower(), ("amenity", place_type))
 
@@ -223,7 +228,7 @@ async def get_nearby_places(lat: float, lng: float, place_type: str = "restauran
   node["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
   way["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
 );
-out center 10;"""
+out center 8;"""
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -233,15 +238,18 @@ out center 10;"""
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if r.status_code != 200:
+                print(f"[get_nearby_places] Overpass HTTP {r.status_code}")
                 return []
             data = r.json()
             results = []
-            for el in data.get("elements", [])[:8]:
+            for el in data.get("elements", []):
                 tags = el.get("tags", {})
                 if not tags.get("name"):
                     continue
                 el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
                 el_lng = el.get("lon") or (el.get("center") or {}).get("lon")
+                if not el_lat or not el_lng:
+                    continue
                 results.append({
                     "name": tags["name"],
                     "type": place_type,
@@ -251,6 +259,8 @@ out center 10;"""
                     "phone": tags.get("phone", ""),
                     "opening_hours": tags.get("opening_hours", ""),
                 })
+                if len(results) >= 8:
+                    break
             return results
     except Exception as e:
         print(f"[get_nearby_places] error: {e}")
@@ -275,8 +285,9 @@ async def get_travel_eta(
     - "Should I leave now to make it in time?"
 
     mode options: driving, walking, cycling
-    Returns duration in minutes and distance in km.
+    Returns duration in minutes, distance in km, road waypoints for map drawing, and Lagos traffic note.
     """
+    import pytz
     profiles = {"driving": "car", "walking": "foot", "cycling": "bike"}
     profile = profiles.get(mode, "car")
 
@@ -285,19 +296,49 @@ async def get_travel_eta(
             r = await client.get(
                 f"https://router.project-osrm.org/route/v1/{profile}/"
                 f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}",
-                params={"overview": "false", "steps": "false"},
-                timeout=8.0,
+                params={"overview": "full", "geometries": "geojson"},
+                timeout=10.0,
             )
             data = r.json()
             if data.get("code") == "Ok" and data.get("routes"):
-                route = data["routes"][0]
-                duration_mins = round(route["duration"] / 60)
-                distance_km = round(route["distance"] / 1000, 1)
+                route       = data["routes"][0]
+                duration_s  = route["duration"]
+                distance_m  = route["distance"]
+                raw_minutes = int(duration_s / 60)
+                distance_km = round(distance_m / 1000, 1)
+
+                # OSRM returns [lng, lat] pairs — swap to [lat, lng] for Leaflet
+                coordinates = route.get("geometry", {}).get("coordinates", [])
+                waypoints = [[c[1], c[0]] for c in coordinates]
+
+                # Lagos traffic multiplier (OSRM uses speed limits, not real traffic)
+                lagos_tz = pytz.timezone("Africa/Lagos")
+                hour = datetime.now(lagos_tz).hour
+                if 7 <= hour <= 10 or 17 <= hour <= 20:
+                    traffic_factor = 2.5
+                    traffic_note = "in current traffic (peak hours)"
+                elif 6 <= hour <= 7 or 10 <= hour <= 12 or 15 <= hour <= 17:
+                    traffic_factor = 1.8
+                    traffic_note = "in current traffic"
+                elif 22 <= hour or hour <= 5:
+                    traffic_factor = 1.0
+                    traffic_note = "at this hour (light traffic)"
+                else:
+                    traffic_factor = 1.4
+                    traffic_note = "in normal traffic"
+
+                realistic_minutes = int(raw_minutes * traffic_factor)
+
                 return {
-                    "duration_minutes": duration_mins,
+                    "duration_minutes": realistic_minutes,
+                    "without_traffic_minutes": raw_minutes,
+                    "traffic_note": traffic_note,
                     "distance_km": distance_km,
                     "mode": mode,
-                    "summary": f"{duration_mins} min by {mode} ({distance_km} km)",
+                    "waypoints": waypoints,
+                    "origin": {"lat": origin_lat, "lng": origin_lng},
+                    "destination": {"lat": dest_lat, "lng": dest_lng},
+                    "summary": f"{realistic_minutes} min {traffic_note} ({distance_km} km)",
                 }
         except Exception as e:
             print(f"[get_travel_eta] OSRM error: {e}")

@@ -110,16 +110,11 @@ export function MapWidget({ places, route, userLat, userLng, title }: MapWidgetP
         })
         L.marker([route.to.lat, route.to.lng], { icon: toIcon }).addTo(map).bindPopup(route.to.label)
 
-        const waypoints: [number, number][] = route.waypoints || [
-          [route.from.lat, route.from.lng],
-          [route.to.lat, route.to.lng],
-        ]
-        L.polyline(waypoints, { color: '#3b82f6', weight: 4, opacity: 0.8 }).addTo(map)
-
-        map.fitBounds(
-          [[route.from.lat, route.from.lng], [route.to.lat, route.to.lng]],
-          { padding: [40, 40] }
-        )
+        const waypoints: [number, number][] = route.waypoints && route.waypoints.length > 2
+          ? route.waypoints as [number, number][]
+          : [[route.from.lat, route.from.lng], [route.to.lat, route.to.lng]]
+        const polyline = L.polyline(waypoints, { color: '#3b82f6', weight: 4, opacity: 0.8 }).addTo(map)
+        map.fitBounds(polyline.getBounds(), { padding: [40, 40] })
       }
     })
 
