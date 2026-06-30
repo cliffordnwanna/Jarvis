@@ -6,6 +6,30 @@ from datetime import datetime, timezone
 
 
 @tool
+def create_timer(label: str, seconds: int) -> str:
+    """
+    Create a countdown timer that appears in the user's chat interface.
+
+    CALL THIS when user says:
+    - "set a timer for X seconds/minutes/hours"
+    - "timer for my pasta / tea / workout"
+    - "count down X minutes"
+    - Any request for a countdown timer
+
+    Args:
+        label: Short description e.g. "pasta", "tea break", "10 second timer"
+        seconds: Duration in seconds. Convert naturally:
+                 "30 seconds"          → 30
+                 "2 minutes"           → 120
+                 "1 hour"              → 3600
+                 "1 minute 30 seconds" → 90
+
+    Returns a sentinel string the frontend uses to render an inline countdown.
+    """
+    return f"__TIMER__:{seconds}:{label}"
+
+
+@tool
 async def get_world_state(user_id: str) -> dict:
     """
     Get the user's current real-world context including location, weather, and time.

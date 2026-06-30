@@ -1,31 +1,40 @@
 from fastapi import APIRouter, Depends, HTTPException
 from backend.auth import get_current_user
-import httpx
+from livekit.api import AccessToken, VideoGrants
 import os
 
 router = APIRouter()
 
 
 @router.get("/token")
-async def get_voice_token(user_id: str = Depends(get_current_user)):
+async def get_livekit_token(user_id: str = Depends(get_current_user)):
     """
-    Generate an ephemeral OpenAI Realtime API token.
-    The frontend uses this to connect directly via WebRTC.
-    The real API key never leaves the backend.
+    Generate a LiveKit room token for the authenticated user.
+    Room name is jarvis-{user_id} — unique per user.
     """
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            "https://api.openai.com/v1/realtime/sessions",
-            headers={
-                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-realtime-preview-2024-12-17",
-                "voice": "alloy",
-            },
-            timeout=10.0,
-        )
-        if res.status_code != 200:
-            raise HTTPException(502, f"OpenAI token error: {res.text}")
-        return res.json()
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+
+    if not livekit_api_key or not livekit_api_secret:
+        raise HTTPException(500, "LiveKit not configured")
+
+    room_name = f"jarvis-{user_id}"
+
+    token = (
+        AccessToken(livekit_api_key, livekit_api_secret)
+        .with_identity(user_id)
+        .with_name("Clifford")
+        .with_grants(VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True,
+        ))
+        .to_jwt()
+    )
+
+    return {
+        "token": token,
+        "room": room_name,
+        "url": os.getenv("LIVEKIT_URL"),
+    }

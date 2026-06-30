@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { NudgePanel } from '@/components/NudgePanel'
 import { VoiceMode } from '@/components/VoiceMode'
-import { TimerWidget } from '@/components/TimerWidget'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
 import type { Nudge, WorldState, Message } from '@/types'
@@ -23,6 +22,7 @@ export default function HomePage() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown')
+  const [inlineTimer, setInlineTimer] = useState<{ label: string; endsAt: number; msgIndex: number } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const getToken = async (): Promise<string | null> => {
@@ -212,12 +212,16 @@ export default function HomePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const handleTimerFromResponse = useCallback((response: string) => {
-    const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
-    if (timerMatch && (window as any).__jarvisAddTimer) {
-      const minutes = parseFloat(timerMatch[1])
-      const label = timerMatch[2]
-      ;(window as any).__jarvisAddTimer(label, Math.round(minutes * 60 * 1000))
+  const handleTimerFromResponse = useCallback((response: string, msgIndex: number) => {
+    // Detect __TIMER__:seconds:label sentinel from create_timer tool
+    const timerMatch = response.match(/__TIMER__:(\d+):(.+)$/)
+    if (timerMatch) {
+      const seconds = parseInt(timerMatch[1], 10)
+      const label = timerMatch[2].trim()
+      setInlineTimer({ label, endsAt: Date.now() + seconds * 1000, msgIndex })
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission()
+      }
     }
   }, [])
 
@@ -271,8 +275,11 @@ export default function HomePage() {
 
       // After stream ends — handle timer + speech
       if (assistantContent) {
-        handleTimerFromResponse(assistantContent)
-        const cleaned = assistantContent.replace(/\s*\[TIMER:[^\]]+\]/g, '').trim()
+        setMessages(prev => {
+          handleTimerFromResponse(assistantContent, prev.length - 1)
+          return prev
+        })
+        const cleaned = assistantContent.replace(/\s*__TIMER__:\d+:.+$/m, '').trim()
         if (cleaned !== assistantContent) {
           setMessages(prev => {
             const updated = [...prev]
@@ -431,7 +438,6 @@ export default function HomePage() {
           <div className="flex flex-col items-center justify-center h-full gap-6 px-4">
             <p className="text-jarvis-muted text-sm">Voice mode active</p>
             <VoiceMode
-              userToken={userToken}
               onTranscript={(text, role) => {
                 setMessages(prev => [...prev, { role, content: text }])
               }}
@@ -454,9 +460,10 @@ export default function HomePage() {
                 </div>
               )}
               {messages.map((msg, i) => {
-                const displayContent = msg.content.replace(/\s*\[TIMER:[^\]]+\]/g, '').trim()
+                const displayContent = msg.content.replace(/\s*__TIMER__:\d+:.+$/m, '').trim()
+                const hasTimer = inlineTimer?.msgIndex === i
                 return (
-                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                     <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
                       msg.role === 'user'
                         ? 'bg-jarvis-accent text-white rounded-br-sm'
@@ -464,14 +471,18 @@ export default function HomePage() {
                     }`}>
                       {displayContent || (streaming && i === messages.length - 1 ? '▋' : '')}
                     </div>
+                    {hasTimer && inlineTimer && (
+                      <InlineTimer
+                        label={inlineTimer.label}
+                        endsAt={inlineTimer.endsAt}
+                        onDone={() => setInlineTimer(null)}
+                      />
+                    )}
                   </div>
                 )
               })}
               <div ref={messagesEndRef} />
             </div>
-
-            {/* Timer widget — centered above input */}
-            <TimerWidget />
 
             {/* Input */}
             <div className="shrink-0 px-3 py-2 border-t border-jarvis-border bg-jarvis-surface">
@@ -534,5 +545,43 @@ function getTimeOfDay() {
   if (h < 12) return 'morning'
   if (h < 17) return 'afternoon'
   return 'evening'
+}
+
+function InlineTimer({ label, endsAt, onDone }: { label: string; endsAt: number; onDone: () => void }) {
+  const [remaining, setRemaining] = useState(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)))
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRemaining(prev => {
+        if (prev <= 1) {
+          clearInterval(interval)
+          setDone(true)
+          window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`Timer done: ${label}`))
+          if (Notification.permission === 'granted') {
+            new Notification('⏰ JARVIS', { body: `${label} — done!` })
+          }
+          setTimeout(onDone, 3000)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [label, onDone])
+
+  const mins = Math.floor(remaining / 60)
+  const secs = remaining % 60
+  const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+
+  if (done) return (
+    <span className="text-green-400 text-sm mt-1.5 block">⏰ {label} — Done! 🔔</span>
+  )
+
+  return (
+    <span className="text-blue-300 text-sm font-mono mt-1.5 block">
+      ⏰ {label} — <strong>{timeStr}</strong> remaining
+    </span>
+  )
 }
 

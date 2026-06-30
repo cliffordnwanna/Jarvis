@@ -120,7 +120,7 @@ Agent never needs to call `get_world_state` unless it needs fresh data.
 - `relationship_events.person_id` — run `ALTER TABLE public.relationship_events ALTER COLUMN person_id DROP NOT NULL` in Supabase
 
 ### Timers vs reminders
-- **Timers** (seconds to hours): client-side only, agent outputs `[TIMER:25:label]`, frontend parses and runs countdown
+- **Timers** (seconds to hours): client-side only, agent calls `create_timer` tool → returns `__TIMER__:seconds:label` sentinel → frontend parses and runs countdown
 - **Reminders** (hours to days): stored in DB via `create_reminder` tool, scheduler fires nudge
 
 ### LangGraph version note

@@ -1,7 +1,7 @@
 import os
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta
+from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer
 from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search, get_exchange_rate, calculate
 from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
@@ -48,6 +48,7 @@ Every fact the user shares about a person must be stored immediately.
   event_type options: call, meeting, follow_up, reminder, task, check_in
   Always convert natural language to ISO 8601 datetime (e.g. 'tomorrow at 9am' → next day 09:00 UTC)
 - get_goals / manage_goal: goal tracking
+- create_timer: when user asks for any countdown timer — tool handles seconds conversion
 - send_nudge: to add an immediate note to the user's nudge panel
 - web_search: for current facts, news, prices, recent events — prefer this over guessing
 - get_exchange_rate: for any currency conversion question (NGN/USD, GBP/NGN, etc.)
@@ -56,11 +57,12 @@ Every fact the user shares about a person must be stored immediately.
 - get_travel_eta: driving/walking/cycling time between two points
 - get_world_state: only if you need fresher data than what's injected above
 
-## Reminders vs Timers vs Nudges
-TIMER (seconds to hours, client-side countdown):
-  Respond with confirmation then append: [TIMER:minutes:label]
-  Examples: "5 min timer" → [TIMER:5:5 minute timer] | "1 hour" → [TIMER:60:1 hour timer]
-  Do NOT use create_reminder for timers.
+## Timers vs Reminders vs Nudges
+TIMER (any countdown — seconds to hours):
+  Call create_timer(label, seconds). Convert duration to seconds yourself.
+  After calling it, your reply MUST end with the exact string the tool returned.
+  Example: tool returns "__TIMER__:120:pasta" → end your reply with "__TIMER__:120:pasta"
+  Do NOT use create_reminder for timers. Do NOT invent any other format.
 
 REMINDER (hours to days away, stored in DB):
   Use create_reminder. Examples: "remind me tomorrow", "call X on Friday".
@@ -92,6 +94,7 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
         web_search,
         get_exchange_rate,
         calculate,
+        create_timer,
         hybrid_search_notes_tool,
         add_person,
         add_note_for_person,
