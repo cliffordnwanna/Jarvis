@@ -4,16 +4,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { NudgePanel } from '@/components/NudgePanel'
 import { VoiceMode } from '@/components/VoiceMode'
-import { TimerWidget } from '@/components/TimerWidget'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
-import type { Nudge, WorldState } from '@/types'
-import { Send, Mic, Bell, X } from 'lucide-react'
-
-interface Message {
-  role: 'user' | 'assistant'
-  content: string
-}
+import type { Nudge, WorldState, Message } from '@/types'
+import { Send, Mic, Bell } from 'lucide-react'
 
 const JARVIS_URL = process.env.NEXT_PUBLIC_JARVIS_URL || 'http://localhost:8000'
 
@@ -107,12 +101,84 @@ export default function HomePage() {
     }
   }, [refreshNudges])
 
+  // Bootstrap location once on auth — checks permission state before deciding whether to ask
   useEffect(() => {
     if (!userToken) return
-    refreshContext()
-    const interval = setInterval(() => refreshContext(), 30 * 60 * 1000)
+
+    const bootstrapLocation = async () => {
+      if (navigator.permissions) {
+        try {
+          const result = await navigator.permissions.query({ name: 'geolocation' as PermissionName })
+
+          if (result.state === 'granted') {
+            // Already granted — silent read, no dialog ever shown
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                localStorage.setItem('jarvis_last_gps', JSON.stringify({
+                  lat: pos.coords.latitude,
+                  lng: pos.coords.longitude,
+                }))
+              },
+              () => {} // silent fail — sensors.ts will use cached coords
+            )
+            refreshContext()
+            return
+          }
+
+          if (result.state === 'denied') {
+            // Explicitly denied — never ask again, use cached/default
+            setLocationPermission('denied')
+            refreshContext()
+            return
+          }
+
+          // 'prompt' — first time, ask exactly once
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              localStorage.setItem('jarvis_last_gps', JSON.stringify({
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              }))
+              setLocationPermission('granted')
+              refreshContext()
+            },
+            () => {
+              setLocationPermission('denied')
+              refreshContext()
+            },
+            { timeout: 10000, maximumAge: 0, enableHighAccuracy: false }
+          )
+
+          // Adapt if user changes permission in browser settings later
+          result.onchange = () => {
+            setLocationPermission(result.state as 'granted' | 'denied' | 'prompt')
+            if (result.state === 'granted') refreshContext()
+          }
+        } catch {
+          // permissions API not supported — just try once, browser decides
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              localStorage.setItem('jarvis_last_gps', JSON.stringify({
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              }))
+              refreshContext()
+            },
+            () => refreshContext()
+          )
+        }
+      } else {
+        // No permissions API (older browsers) — just refresh with whatever we have
+        refreshContext()
+      }
+    }
+
+    bootstrapLocation()
+
+    // Sync every 5 minutes — no permission dialog, reads from cache
+    const interval = setInterval(() => refreshContext(), 5 * 60 * 1000)
     return () => clearInterval(interval)
-  }, [userToken, refreshContext])
+  }, [userToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const syncLocation = useCallback(async () => {
     const token = await getToken()
@@ -147,10 +213,17 @@ export default function HomePage() {
 
   const handleTimerFromResponse = useCallback((response: string) => {
     const timerMatch = response.match(/\[TIMER:(\d+(?:\.\d+)?):([^\]]+)\]/)
-    if (timerMatch && (window as any).__jarvisAddTimer) {
+    if (timerMatch) {
       const minutes = parseFloat(timerMatch[1])
       const label = timerMatch[2]
-      ;(window as any).__jarvisAddTimer(label, minutes * 60 * 1000)
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '',
+        type: 'timer',
+        timerLabel: label,
+        timerDurationMs: Math.round(minutes * 60 * 1000),
+      }])
     }
   }, [])
 
@@ -158,12 +231,15 @@ export default function HomePage() {
     const text = (overrideInput ?? input).trim()
     if (!text || streaming || !userToken) return
 
-    const userMsg: Message = { role: 'user', content: text }
+    const userMsg: Message = { role: 'user', content: text, type: 'text' }
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setStreaming(true)
 
-    const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }))
+    // Only send text messages to agent — skip timer messages
+    const allMessages = [...messages, userMsg]
+      .filter(m => m.type !== 'timer')
+      .map(m => ({ role: m.role, content: m.content }))
 
     try {
       const token = await getToken()
@@ -180,7 +256,7 @@ export default function HomePage() {
       const decoder = new TextDecoder()
       let assistantContent = ''
 
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+      setMessages(prev => [...prev, { role: 'assistant', content: '', type: 'text' }])
 
       while (true) {
         const { done, value } = await reader.read()
@@ -387,13 +463,16 @@ export default function HomePage() {
                 </div>
               )}
               {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={msg.id || i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
                     msg.role === 'user'
                       ? 'bg-jarvis-accent text-white rounded-br-sm'
                       : 'bg-jarvis-surface text-jarvis-text rounded-bl-sm border border-jarvis-border'
                   }`}>
-                    {msg.content || (streaming && i === messages.length - 1 ? '▋' : '')}
+                    {msg.type === 'timer' && msg.timerLabel && msg.timerDurationMs
+                      ? <TimerMessage label={msg.timerLabel} durationMs={msg.timerDurationMs} />
+                      : msg.content || (streaming && i === messages.length - 1 ? '▋' : '')
+                    }
                   </div>
                 </div>
               ))}
@@ -439,8 +518,6 @@ export default function HomePage() {
         )}
       </div>
 
-      <TimerWidget />
-
       {/* Nudge panel */}
       {panelOpen && userToken && (
         <div className="fixed inset-0 z-50 md:relative md:inset-auto md:w-80">
@@ -463,4 +540,44 @@ function getTimeOfDay() {
   if (h < 12) return 'morning'
   if (h < 17) return 'afternoon'
   return 'evening'
+}
+
+function TimerMessage({ label, durationMs }: { label: string; durationMs: number }) {
+  const [remaining, setRemaining] = useState(durationMs)
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    if (done) return
+    const interval = setInterval(() => {
+      setRemaining(prev => {
+        if (prev <= 1000) {
+          clearInterval(interval)
+          setDone(true)
+          if (window.speechSynthesis) {
+            const u = new SpeechSynthesisUtterance(`Timer done: ${label}`)
+            window.speechSynthesis.speak(u)
+          }
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('⏰ JARVIS Timer', { body: `${label} — done!` })
+          }
+          return 0
+        }
+        return prev - 1000
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [done, label])
+
+  const minutes = Math.floor(remaining / 60000)
+  const seconds = Math.floor((remaining % 60000) / 1000)
+  const timeStr = `${minutes}:${String(seconds).padStart(2, '0')}`
+
+  if (done) {
+    return <span className="flex items-center gap-2 text-green-400">⏰ {label} — Done! 🔔</span>
+  }
+  return (
+    <span className="flex items-center gap-2 text-blue-300">
+      ⏰ {label} — <span className="font-mono font-bold">{timeStr}</span> remaining
+    </span>
+  )
 }

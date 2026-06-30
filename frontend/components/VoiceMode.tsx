@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState, useCallback } from 'react'
-import { Mic, MicOff, Square } from 'lucide-react'
+import { Mic, Square } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 
 interface VoiceModeProps {
@@ -33,20 +33,29 @@ function speak(text: string, onDone: () => void) {
   utter.volume = 1.0
   utter.onend = onDone
   utter.onerror = onDone
-  const voices = window.speechSynthesis.getVoices()
-  const preferred =
-    voices.find(v => v.lang.startsWith('en') && !v.localService) ||
-    voices.find(v => v.lang.startsWith('en'))
-  if (preferred) utter.voice = preferred
-  window.speechSynthesis.speak(utter)
+  const trySpeak = () => {
+    const voices = window.speechSynthesis.getVoices()
+    const preferred =
+      voices.find(v => v.lang.startsWith('en') && !v.localService) ||
+      voices.find(v => v.lang.startsWith('en'))
+    if (preferred) utter.voice = preferred
+    window.speechSynthesis.speak(utter)
+  }
+  if (window.speechSynthesis.getVoices().length === 0) {
+    window.speechSynthesis.onvoiceschanged = trySpeak
+  } else {
+    trySpeak()
+  }
 }
 
 export function VoiceMode({ onTranscript }: VoiceModeProps) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const recognitionRef = useRef<any>(null)
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const stop = useCallback(() => {
+    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
     recognitionRef.current?.stop()
     window.speechSynthesis?.cancel()
     setStatus('idle')
@@ -62,15 +71,37 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
 
     setError(null)
     const rec = new SpeechRecognition()
+    // Safari requires both of these to be false
     rec.lang = 'en-US'
+    rec.continuous = false
     rec.interimResults = false
     rec.maxAlternatives = 1
     recognitionRef.current = rec
 
-    rec.onstart = () => setStatus('listening')
+    // Guard against Safari firing onend before onresult
+    let resultReceived = false
+
+    rec.onstart = () => {
+      setStatus('listening')
+      // 10-second safety net for Safari — clears if result arrives first
+      safetyTimerRef.current = setTimeout(() => {
+        if (!resultReceived) {
+          rec.stop()
+          setStatus('idle')
+          setError('Listening timed out — tap to try again')
+        }
+      }, 10000)
+    }
 
     rec.onresult = async (e: any) => {
-      const transcript = e.results[0][0].transcript
+      resultReceived = true
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
+
+      const transcript = Array.from(e.results as SpeechRecognitionResultList)
+        .map((r: SpeechRecognitionResult) => r[0].transcript)
+        .join('')
+      if (!transcript.trim()) { setStatus('idle'); return }
+
       if (onTranscript) onTranscript(transcript, 'user')
       setStatus('thinking')
 
@@ -99,7 +130,6 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
         }
 
         if (full && onTranscript) onTranscript(full, 'assistant')
-
         setStatus('speaking')
         speak(full || '', () => setStatus('idle'))
       } catch (err: any) {
@@ -109,13 +139,20 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
     }
 
     rec.onerror = (e: any) => {
-      setError(e.error === 'no-speech' ? 'No speech detected' : `Error: ${e.error}`)
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
+      const msg =
+        e.error === 'not-allowed' ? 'Microphone permission denied' :
+        e.error === 'no-speech'   ? 'No speech detected — tap to try again' :
+        `Error: ${e.error}`
+      setError(msg)
       setStatus('idle')
     }
 
     rec.onend = () => {
-      // Only reset to idle if we haven't moved on to thinking/speaking
-      setStatus(prev => prev === 'listening' ? 'idle' : prev)
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
+      // Only reset to idle if no result was received —
+      // Safari sometimes fires onend before onresult
+      if (!resultReceived) setStatus('idle')
     }
 
     rec.start()
@@ -127,10 +164,16 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
     <div className="flex flex-col items-center gap-4">
       {/* Mic button */}
       <div className="relative flex items-center justify-center w-20 h-20">
-        {isActive && (
+        {status === 'listening' && (
           <>
-            <div className={`absolute inset-0 rounded-full animate-ping opacity-20 ${status === 'speaking' ? 'bg-blue-400' : 'bg-red-400'}`} />
-            <div className={`absolute inset-2 rounded-full animate-ping opacity-30 ${status === 'speaking' ? 'bg-blue-400' : 'bg-red-400'}`} />
+            <div className="absolute inset-0 rounded-full animate-ping opacity-20 bg-red-400" />
+            <div className="absolute inset-2 rounded-full animate-ping opacity-30 bg-red-400" />
+          </>
+        )}
+        {status === 'speaking' && (
+          <>
+            <div className="absolute inset-0 rounded-full animate-ping opacity-20 bg-blue-400" />
+            <div className="absolute inset-2 rounded-full animate-ping opacity-30 bg-blue-400" />
           </>
         )}
         {status === 'thinking' && (
@@ -145,21 +188,19 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
             : 'bg-gray-700 hover:bg-gray-600'
           }`}
         >
-          {status === 'idle'
-            ? <Mic size={20} className="text-white" />
-            : isActive
+          {isActive
             ? <Square size={16} className="text-white" />
-            : <MicOff size={20} className="text-white" />
+            : <Mic size={20} className="text-white" />
           }
         </button>
       </div>
 
       {/* Status label */}
       <p className="text-sm text-gray-400">
-        {status === 'idle' && 'Tap to talk'}
+        {status === 'idle'      && 'Tap to talk'}
         {status === 'listening' && 'Listening...'}
-        {status === 'thinking' && 'Thinking...'}
-        {status === 'speaking' && 'Speaking...'}
+        {status === 'thinking'  && 'Thinking...'}
+        {status === 'speaking'  && 'Speaking...'}
       </p>
 
       {/* Stop hint when active */}
@@ -169,7 +210,6 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
         </button>
       )}
 
-      {/* Error */}
       {error && <p className="text-xs text-red-400 text-center max-w-[200px]">{error}</p>}
     </div>
   )

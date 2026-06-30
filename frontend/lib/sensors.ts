@@ -43,7 +43,7 @@ async function getGps(): Promise<GpsResult> {
         }
         resolve({ lat: 6.5244, lng: 3.3792, accurate: false, error: err.message })
       },
-      { timeout: 8000, maximumAge: 60000, enableHighAccuracy: false }
+      { timeout: 8000, maximumAge: 300000, enableHighAccuracy: false }
     )
   })
 }

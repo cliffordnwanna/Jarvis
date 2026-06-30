@@ -1,3 +1,12 @@
+export interface Message {
+  id?: string
+  role: 'user' | 'assistant'
+  content: string
+  type?: 'text' | 'timer'
+  timerLabel?: string
+  timerDurationMs?: number
+}
+
 export interface Person {
   id: string
   user_id: string
