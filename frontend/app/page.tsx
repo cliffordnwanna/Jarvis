@@ -398,7 +398,7 @@ export default function HomePage() {
   const temporal = worldState?.temporal
 
   return (
-    <div className="flex flex-col h-dvh w-full bg-jarvis-bg text-jarvis-text overflow-hidden">
+    <div className="flex flex-col bg-jarvis-bg text-jarvis-text overflow-hidden" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}>
 
       {/* Header */}
       <header className="flex items-center justify-between px-3 py-2 border-b border-jarvis-border bg-jarvis-surface shrink-0">
@@ -551,6 +551,10 @@ export default function HomePage() {
                   .replace(/\s*__TIMER__:\d+(?:\.\d+)?:[^\n]+/gm, '')
                   .replace(/\s*__MAP_PLACES__:\[[\s\S]+?\](?:\n|$)/gm, '')
                   .replace(/\s*__MAP_ROUTE__:\{[\s\S]+?\}(?:\n|$)/gm, '')
+                  .replace(/\*\*(.*?)\*\*/g, '$1')
+                  .replace(/\*(.*?)\*/g, '$1')
+                  .replace(/#{1,6}\s+/g, '')
+                  .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
                   .trim()
                 return (
                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
