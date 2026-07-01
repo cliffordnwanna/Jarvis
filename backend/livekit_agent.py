@@ -26,6 +26,9 @@ You are in VOICE mode. Rules:
 - Speak naturally, like a smart friend
 - Be direct and warm
 - You know the user's name and context from the system
+- For nearby places: call find_nearby_places
+- For travel time or directions: call get_directions
+- For traffic updates: call check_traffic
 
 {user_context}
 """
@@ -382,115 +385,132 @@ class JARVISAgent(Agent):
     async def find_nearby_places(
         self,
         context: RunContext,
-        place_type: str = "restaurant",
+        query: str,
+        radius: int = 3000,
     ) -> str:
         """
-        Find places near the user's current location.
-        Call this when the user asks 'find me a restaurant nearby',
-        'is there an ATM near me?', 'where's the nearest pharmacy?'
+        Find any nearby place using real Lagos data.
+        Call when user asks to find any place near them:
+        'find a restaurant', 'is there an ATM near me?',
+        'where's the nearest pharmacy?', 'find a suya spot'.
 
         Args:
-            place_type: restaurant, pharmacy, atm, fuel, bank, hospital, supermarket
+            query: What to find e.g. "restaurant", "church", "pharmacy", "ATM", "suya"
+            radius: Search radius in meters (default 3000)
         """
         try:
-            ws = await cache_get(self._user_id)
-            if not ws:
-                return "I don't have your location yet."
+            from backend.tools.maps_tools import find_nearby_places as _find
+            results = await _find.__wrapped__(self._user_id, query, radius)
 
-            location = ws.get("location", {})
-            lat = location.get("lat")
-            lng = location.get("lng")
-            if not lat:
-                meta = ws.get("_meta", {})
-                lat = meta.get("lat")
-                lng = meta.get("lng")
-            if not lat or not lng:
-                return "I can't get your exact location right now."
+            if not results or (len(results) == 1 and "error" in results[0]):
+                return f"I couldn't find any {query} nearby right now."
 
-            type_map = {
-                "restaurant": ("amenity", "restaurant"),
-                "pharmacy":   ("amenity", "pharmacy"),
-                "atm":        ("amenity", "atm"),
-                "fuel":       ("amenity", "fuel"),
-                "bank":       ("amenity", "bank"),
-                "hospital":   ("amenity", "hospital"),
-                "supermarket": ("shop", "supermarket"),
-            }
-            tag_key, tag_val = type_map.get(place_type.lower(), ("amenity", place_type))
-            query = (
-                f'[out:json][timeout:10];'
-                f'(node["{tag_key}"="{tag_val}"](around:1000,{lat},{lng}););'
-                f'out center 5;'
-            )
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    "https://overpass-api.de/api/interpreter",
-                    data={"data": query},
-                    timeout=12.0,
-                )
-                data = r.json()
+            parts = []
+            for place in results[:3]:
+                name = place.get("name", "Unknown")
+                dist = place.get("distance_str", "")
+                parts.append(f"{name}, {dist} away")
 
-            elements = [e for e in data.get("elements", []) if e.get("tags", {}).get("name")][:3]
-            if not elements:
-                return f"I couldn't find any {place_type}s nearby right now."
-
-            names = [e["tags"]["name"] for e in elements]
-            return f"Nearby {place_type}s: {', '.join(names)}."
+            return f"Here are some nearby {query}s: {'. '.join(parts)}."
         except Exception as e:
             return f"Couldn't search nearby places: {e}"
 
     @function_tool
-    async def get_travel_time(self, context: RunContext, destination: str) -> str:
+    async def get_directions(
+        self,
+        context: RunContext,
+        destination: str,
+    ) -> str:
         """
-        Get estimated travel time from current location to a destination.
-        Call this when user asks 'how long to get to X?',
-        'how far is X from here?', 'travel time to X'.
+        Get real traffic-aware travel time to a destination.
+        Call when user asks how long to get somewhere or for directions:
+        'how long to get to work?', 'how do I get home?',
+        'directions to Blenco', 'travel time to the island'.
 
         Args:
-            destination: The destination name or address
+            destination: Destination name e.g. "work", "home", "Ikeja City Mall"
         """
         try:
-            ws = await cache_get(self._user_id)
-            if not ws:
-                return "I don't have your location yet."
+            from backend.tools.maps_tools import get_route_and_traffic as _route
+            from backend.tools.maps_tools import search_place_by_name as _search
 
-            location = ws.get("location", {})
-            lat = location.get("lat")
-            lng = location.get("lng")
-            if not lat or not lng:
-                return "I can't get your current location right now."
+            db = get_supabase()
+            dest_lat = dest_lng = None
+            dest_label = destination
 
-            async with httpx.AsyncClient() as client:
-                geo = await client.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={"q": destination, "format": "json", "limit": 1},
-                    headers={"User-Agent": "JARVIS/1.0"},
-                    timeout=8.0,
-                )
-                geo_data = geo.json()
-                if not geo_data:
-                    return f"I couldn't find {destination} on the map."
+            # Resolve home/work from saved profile coords
+            profile = db.table("users")\
+                .select("home_lat,home_lng,work_lat,work_lng,home_address,work_address")\
+                .eq("id", self._user_id)\
+                .maybe_single()\
+                .execute()
 
-                dest_lat = float(geo_data[0]["lat"])
-                dest_lng = float(geo_data[0]["lon"])
+            if profile.data:
+                d = destination.lower()
+                if any(w in d for w in ["home", "house"]):
+                    dest_lat = profile.data.get("home_lat")
+                    dest_lng = profile.data.get("home_lng")
+                    dest_label = profile.data.get("home_address") or "Home"
+                elif any(w in d for w in ["work", "office", "job"]):
+                    dest_lat = profile.data.get("work_lat")
+                    dest_lng = profile.data.get("work_lng")
+                    dest_label = profile.data.get("work_address") or "Work"
 
-                route = await client.get(
-                    f"https://router.project-osrm.org/route/v1/driving/"
-                    f"{lng},{lat};{dest_lng},{dest_lat}",
-                    params={"overview": "false"},
-                    timeout=8.0,
-                )
-                route_data = route.json()
+            # Geocode named place if no saved coords matched
+            if not dest_lat or not dest_lng:
+                place = await _search.__wrapped__(self._user_id, destination)
+                if "error" not in place:
+                    dest_lat = place.get("lat")
+                    dest_lng = place.get("lng")
+                    dest_label = place.get("name", destination)
 
-            if route_data.get("routes"):
-                duration_s = route_data["routes"][0]["duration"]
-                distance_m = route_data["routes"][0]["distance"]
-                minutes = int(duration_s / 60)
-                km = round(distance_m / 1000, 1)
-                return f"It's about {minutes} minutes driving to {destination}, roughly {km} km away."
-            return f"Couldn't calculate route to {destination}."
+            if not dest_lat or not dest_lng:
+                return f"I couldn't find {destination} on the map."
+
+            result = await _route.__wrapped__(self._user_id, dest_lat, dest_lng, dest_label)
+
+            if "error" in result:
+                return f"I couldn't get directions to {dest_label} right now."
+
+            minutes = result.get("duration_minutes", 0)
+            km = result.get("distance_km", 0)
+            delay = result.get("traffic_delay_minutes", 0)
+
+            if delay > 10:
+                return (f"About {minutes} minutes to {dest_label}, {km} km. "
+                        f"Heavy traffic with a {delay}-minute delay — consider leaving later.")
+            elif delay > 3:
+                return f"About {minutes} minutes to {dest_label}, {km} km, with some traffic."
+            else:
+                return f"About {minutes} minutes to {dest_label}, {km} km. Roads are clear."
         except Exception as e:
-            return f"Travel time error: {e}"
+            return f"Couldn't get directions: {e}"
+
+    @function_tool
+    async def check_traffic(
+        self,
+        context: RunContext,
+        destination: str = "work",
+    ) -> str:
+        """
+        Check current traffic conditions to home or work.
+        Call when user asks about traffic or whether to leave:
+        'how's traffic?', 'should I leave now?', 'is there traffic to work?',
+        'how long to get home?'.
+
+        Args:
+            destination: "home" or "work"
+        """
+        try:
+            from backend.tools.maps_tools import check_traffic_to_saved_location as _traffic
+            result = await _traffic.__wrapped__(self._user_id, destination)
+
+            if "error" in result:
+                return result["error"]
+
+            return result.get("advice") or f"About {result.get('duration_minutes', '?')} minutes to {destination} right now."
+        except Exception as e:
+            return f"Couldn't check traffic: {e}"
 
     @function_tool
     async def update_goal(self, context: RunContext, goal_title: str, action: str) -> str:
