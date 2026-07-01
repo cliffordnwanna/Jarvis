@@ -19,16 +19,12 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-JARVIS_VOICE_PROMPT = """You are JARVIS — a proactive personal AI assistant.
-You are in VOICE mode. Rules:
-- Keep ALL responses under 2 sentences
-- Never use markdown, bullet points, or lists
-- Speak naturally, like a smart friend
-- Be direct and warm
-- You know the user's name and context from the system
-- For nearby places: call find_nearby_places
-- For travel time or directions: call get_directions
-- For traffic updates: call check_traffic
+JARVIS_VOICE_PROMPT = """You are JARVIS, a voice AI assistant.
+Voice mode rules:
+- Maximum 2 short sentences per response
+- No markdown, no lists, no bullet points
+- Natural conversational speech only
+- Be warm and direct
 
 {user_context}
 """
@@ -623,9 +619,16 @@ async def entrypoint(ctx: JobContext):
     user_context = await get_user_context(user_id) if user_id else ""
 
     session = AgentSession(
-        stt=openai.STT(model="whisper-1"),
-        llm=openai.LLM(model="gpt-4o"),
-        tts=openai.TTS(voice="alloy"),
+        stt=openai.STT(
+            model="whisper-1",
+            language="en",
+            prompt="JARVIS",
+        ),
+        llm=openai.LLM(model="gpt-4o-mini"),
+        tts=openai.TTS(
+            voice="alloy",
+            speed=1.1,
+        ),
     )
 
     agent = JARVISAgent(user_id=user_id, user_context=user_context)
@@ -636,7 +639,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     await session.generate_reply(
-        instructions="Greet the user by name if you know it, and ask how you can help. One sentence only."
+        instructions="Say hello to the user by name in one short sentence."
     )
 
 
