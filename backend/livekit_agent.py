@@ -385,31 +385,79 @@ class JARVISAgent(Agent):
         radius: int = 3000,
     ) -> str:
         """
-        Find any nearby place using real Lagos data.
-        Call when user asks to find any place near them:
-        'find a restaurant', 'is there an ATM near me?',
-        'where's the nearest pharmacy?', 'find a suya spot'.
+        Find any nearby place — restaurant, church, ATM, pharmacy,
+        hotel, mechanic, suya spot, filling station, anything.
+        Call this when user asks to find any place near them.
 
         Args:
-            query: What to find e.g. "restaurant", "church", "pharmacy", "ATM", "suya"
-            radius: Search radius in meters (default 3000)
+            query: What to find e.g. "restaurant", "church", "ATM"
+            radius: Search radius in meters, default 3000
         """
-        try:
-            from backend.tools.maps_tools import find_nearby_places as _find
-            results = await _find.__wrapped__(self._user_id, query, radius)
+        api_key = os.getenv("TOMTOM_API_KEY")
+        if not api_key:
+            return "Location search is not configured."
 
-            if not results or (len(results) == 1 and "error" in results[0]):
+        ws = await cache_get(self._user_id)
+        if not ws:
+            return "I don't have your location yet."
+
+        location = ws.get("location", {})
+        lat = location.get("lat") or ws.get("_meta", {}).get("lat")
+        lng = location.get("lng") or ws.get("_meta", {}).get("lng")
+        if not lat or not lng:
+            return "I can't get your location right now."
+
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"https://api.tomtom.com/search/2/poiSearch/{query}.json",
+                    params={
+                        "key": api_key,
+                        "lat": lat,
+                        "lon": lng,
+                        "radius": radius,
+                        "limit": 4,
+                        "language": "en-GB",
+                        "countrySet": "NG",
+                    },
+                    timeout=10.0,
+                )
+                data = r.json()
+
+            results = [item for item in data.get("results", [])
+                       if item.get("poi", {}).get("name")][:3]
+
+            if not results:
+                r2 = await client.get(
+                    f"https://api.tomtom.com/search/2/search/{query}.json",
+                    params={
+                        "key": api_key,
+                        "lat": lat,
+                        "lon": lng,
+                        "radius": radius,
+                        "limit": 3,
+                        "countrySet": "NG",
+                    },
+                    timeout=10.0,
+                )
+                results = r2.json().get("results", [])[:3]
+
+            if not results:
                 return f"I couldn't find any {query} nearby right now."
 
             parts = []
-            for place in results[:3]:
-                name = place.get("name", "Unknown")
-                dist = place.get("distance_str", "")
-                parts.append(f"{name}, {dist} away")
+            for place in results:
+                name = place.get("poi", {}).get("name") or \
+                       place.get("address", {}).get("freeformAddress", "Unknown")
+                dist = place.get("dist", 0)
+                dist_str = f"{round(dist / 1000, 1)} km" if dist > 1000 else f"{int(dist)} metres"
+                parts.append(f"{name}, {dist_str} away")
 
-            return f"Here are some nearby {query}s: {'. '.join(parts)}."
+            return f"Nearby {query}s: {'. '.join(parts)}."
+
         except Exception as e:
-            return f"Couldn't search nearby places: {e}"
+            logger.error(f"[voice] find_nearby_places error: {e}")
+            return f"I had trouble searching for {query} nearby."
 
     @function_tool
     async def get_directions(
@@ -418,69 +466,115 @@ class JARVISAgent(Agent):
         destination: str,
     ) -> str:
         """
-        Get real traffic-aware travel time to a destination.
-        Call when user asks how long to get somewhere or for directions:
-        'how long to get to work?', 'how do I get home?',
-        'directions to Blenco', 'travel time to the island'.
+        Get travel time and directions with real traffic data.
+        Call when user asks how long to get somewhere or for directions.
+        Automatically resolves home and work from saved addresses.
 
         Args:
-            destination: Destination name e.g. "work", "home", "Ikeja City Mall"
+            destination: Where to go e.g. "work", "home", "Ikeja",
+                         "Duchess Hospital", "Marina"
         """
-        try:
-            from backend.tools.maps_tools import get_route_and_traffic as _route
-            from backend.tools.maps_tools import search_place_by_name as _search
+        api_key = os.getenv("TOMTOM_API_KEY")
+        if not api_key:
+            return "Directions are not configured right now."
 
-            db = get_supabase()
-            dest_lat = dest_lng = None
-            dest_label = destination
+        ws = await cache_get(self._user_id)
+        if not ws:
+            return "I don't have your location yet."
 
-            # Resolve home/work from saved profile coords
-            profile = db.table("users")\
-                .select("home_lat,home_lng,work_lat,work_lng,home_address,work_address")\
-                .eq("id", self._user_id)\
-                .maybe_single()\
-                .execute()
+        location = ws.get("location", {})
+        origin_lat = location.get("lat") or ws.get("_meta", {}).get("lat")
+        origin_lng = location.get("lng") or ws.get("_meta", {}).get("lng")
+        if not origin_lat:
+            return "I can't get your current location."
 
-            if profile.data:
-                d = destination.lower()
-                if any(w in d for w in ["home", "house"]):
-                    dest_lat = profile.data.get("home_lat")
-                    dest_lng = profile.data.get("home_lng")
-                    dest_label = profile.data.get("home_address") or "Home"
-                elif any(w in d for w in ["work", "office", "job"]):
-                    dest_lat = profile.data.get("work_lat")
-                    dest_lng = profile.data.get("work_lng")
-                    dest_label = profile.data.get("work_address") or "Work"
+        dest_lat = dest_lng = dest_label = None
+        dest_lower = destination.lower().strip()
 
-            # Geocode named place if no saved coords matched
-            if not dest_lat or not dest_lng:
-                place = await _search.__wrapped__(self._user_id, destination)
-                if "error" not in place:
-                    dest_lat = place.get("lat")
-                    dest_lng = place.get("lng")
-                    dest_label = place.get("name", destination)
-
-            if not dest_lat or not dest_lng:
-                return f"I couldn't find {destination} on the map."
-
-            result = await _route.__wrapped__(self._user_id, dest_lat, dest_lng, dest_label)
-
-            if "error" in result:
-                return f"I couldn't get directions to {dest_label} right now."
-
-            minutes = result.get("duration_minutes", 0)
-            km = result.get("distance_km", 0)
-            delay = result.get("traffic_delay_minutes", 0)
-
-            if delay > 10:
-                return (f"About {minutes} minutes to {dest_label}, {km} km. "
-                        f"Heavy traffic with a {delay}-minute delay — consider leaving later.")
-            elif delay > 3:
-                return f"About {minutes} minutes to {dest_label}, {km} km, with some traffic."
+        if any(w in dest_lower for w in ["home", "house", "back home"]):
+            p = get_supabase().table("users")\
+                .select("home_lat,home_lng,home_address")\
+                .eq("id", self._user_id).maybe_single().execute()
+            if p.data and p.data.get("home_lat"):
+                dest_lat, dest_lng = p.data["home_lat"], p.data["home_lng"]
+                dest_label = p.data.get("home_address", "Home")
             else:
-                return f"About {minutes} minutes to {dest_label}, {km} km. Roads are clear."
+                return "You haven't set a home address yet. Tell me your home address to save it."
+
+        elif any(w in dest_lower for w in ["work", "office", "job"]):
+            p = get_supabase().table("users")\
+                .select("work_lat,work_lng,work_address")\
+                .eq("id", self._user_id).maybe_single().execute()
+            if p.data and p.data.get("work_lat"):
+                dest_lat, dest_lng = p.data["work_lat"], p.data["work_lng"]
+                dest_label = p.data.get("work_address", "Work")
+            else:
+                return "You haven't set a work address yet. Tell me your work address to save it."
+
+        else:
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"https://api.tomtom.com/search/2/search/{destination} Lagos.json",
+                        params={
+                            "key": api_key,
+                            "limit": 1,
+                            "countrySet": "NG",
+                            "lat": origin_lat,
+                            "lon": origin_lng,
+                        },
+                        timeout=8.0,
+                    )
+                    data = r.json()
+                results = data.get("results", [])
+                if not results:
+                    return f"I couldn't find {destination} on the map."
+                pos = results[0].get("position", {})
+                dest_lat = pos.get("lat")
+                dest_lng = pos.get("lon")
+                dest_label = results[0].get("poi", {}).get("name") or \
+                             results[0].get("address", {}).get("freeformAddress", destination)
+            except Exception:
+                return f"I couldn't locate {destination}."
+
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"https://api.tomtom.com/routing/1/calculateRoute/"
+                    f"{origin_lat},{origin_lng}:{dest_lat},{dest_lng}/json",
+                    params={
+                        "key": api_key,
+                        "travelMode": "car",
+                        "traffic": "true",
+                        "routeType": "fastest",
+                        "computeTravelTimeFor": "all",
+                    },
+                    timeout=12.0,
+                )
+                data = r.json()
+
+            routes = data.get("routes", [])
+            if not routes:
+                return f"I couldn't find a route to {dest_label}."
+
+            summary = routes[0].get("summary", {})
+            minutes = int(summary.get("travelTimeInSeconds", 0) / 60)
+            no_traffic_min = int(summary.get("noTrafficTravelTimeInSeconds", 0) / 60)
+            km = round(summary.get("lengthInMeters", 0) / 1000, 1)
+            delay = minutes - no_traffic_min
+
+            if delay > 15:
+                return (f"It'll take about {minutes} minutes to {dest_label} — "
+                        f"heavy traffic adding {delay} minutes. "
+                        f"Only {no_traffic_min} minutes without traffic.")
+            elif delay > 5:
+                return f"About {minutes} minutes to {dest_label}, {km} kilometres, with some traffic."
+            else:
+                return f"About {minutes} minutes to {dest_label}, {km} kilometres. Roads look clear."
+
         except Exception as e:
-            return f"Couldn't get directions: {e}"
+            logger.error(f"[voice] get_directions error: {e}")
+            return "I had trouble getting directions right now."
 
     @function_tool
     async def check_traffic(
@@ -490,23 +584,13 @@ class JARVISAgent(Agent):
     ) -> str:
         """
         Check current traffic conditions to home or work.
-        Call when user asks about traffic or whether to leave:
-        'how's traffic?', 'should I leave now?', 'is there traffic to work?',
-        'how long to get home?'.
+        Call when user asks about traffic, whether to leave,
+        how bad the roads are, or if it is a good time to go.
 
         Args:
             destination: "home" or "work"
         """
-        try:
-            from backend.tools.maps_tools import check_traffic_to_saved_location as _traffic
-            result = await _traffic.__wrapped__(self._user_id, destination)
-
-            if "error" in result:
-                return result["error"]
-
-            return result.get("advice") or f"About {result.get('duration_minutes', '?')} minutes to {destination} right now."
-        except Exception as e:
-            return f"Couldn't check traffic: {e}"
+        return await self.get_directions(context, destination)
 
     @function_tool
     async def update_goal(self, context: RunContext, goal_title: str, action: str) -> str:
