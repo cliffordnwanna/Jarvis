@@ -1,17 +1,15 @@
 """
-JARVIS Google Maps Tools
-All location intelligence powered by Google Maps Platform.
+JARVIS Maps Tools — powered by TomTom APIs (no billing required, real traffic data).
 """
 import os
-import httpx
 import math
+import httpx
 from langchain_core.tools import tool
 from backend.db.cache import cache_get
 from backend.db.postgres import get_supabase
 
 
 def _haversine(lat1, lng1, lat2, lng2) -> int:
-    """Distance in meters between two coordinates."""
     R = 6371000
     dlat = math.radians(lat2 - lat1)
     dlng = math.radians(lng2 - lng1)
@@ -21,31 +19,7 @@ def _haversine(lat1, lng1, lat2, lng2) -> int:
     return int(R * 2 * math.asin(math.sqrt(a)))
 
 
-def _decode_polyline(encoded: str) -> list:
-    """Decode Google Encoded Polyline to [[lat, lng], ...] pairs."""
-    result = []
-    index = lat = lng = 0
-    while index < len(encoded):
-        for is_lat in (True, False):
-            shift = val = 0
-            while True:
-                b = ord(encoded[index]) - 63
-                index += 1
-                val |= (b & 0x1F) << shift
-                shift += 5
-                if b < 0x20:
-                    break
-            delta = ~(val >> 1) if val & 1 else val >> 1
-            if is_lat:
-                lat += delta
-            else:
-                lng += delta
-        result.append([lat / 1e5, lng / 1e5])
-    return result
-
-
 async def _get_user_location(user_id: str):
-    """Return (lat, lng) from world state cache, or (None, None)."""
     ws = await cache_get(user_id)
     if not ws:
         return None, None
@@ -62,30 +36,29 @@ async def find_nearby_places(
     radius: int = 3000,
 ) -> list:
     """
-    Find any nearby place using Google Maps Places API.
+    Find any nearby place using TomTom Places Search API.
 
     ALWAYS use this when user asks to find ANYTHING nearby.
-    The query accepts natural language — not just hardcoded types.
+    The query accepts natural language — restaurant, church, suya spot,
+    mechanic, pharmacy, Shoprite, ATM, hotel, fuel station, etc.
 
     Examples:
-    - "find a restaurant near me"      → query="restaurant"
-    - "find a church near me"          → query="church"
-    - "is there a Shoprite nearby?"    → query="Shoprite"
-    - "find somewhere to buy suya"     → query="suya spot"
-    - "find a filling station"         → query="fuel station"
-    - "find a mechanic"                → query="auto repair"
-    - "find a pharmacy"                → query="pharmacy"
-    - "find an ATM"                    → query="ATM"
-    - "find a hotel"                   → query="hotel"
+    - "find a restaurant near me"   → query="restaurant"
+    - "find a church near me"       → query="church"
+    - "find a Shoprite nearby"      → query="Shoprite"
+    - "find somewhere to buy suya"  → query="suya"
+    - "find a mechanic"             → query="mechanic"
+    - "find an ATM"                 → query="ATM"
+    - "find a pharmacy"             → query="pharmacy"
 
     Args:
         user_id: The user's UUID
         query: Natural language description of what to find
         radius: Search radius in meters (default 3000 = 3km)
     """
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
-        return [{"error": "Google Maps not configured"}]
+        return [{"error": "TomTom API key not configured"}]
 
     lat, lng = await _get_user_location(user_id)
     if not lat:
@@ -93,97 +66,62 @@ async def find_nearby_places(
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Try Places API (New) first — better results
-            r = await client.post(
-                "https://places.googleapis.com/v1/places:searchNearby",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Goog-Api-Key": api_key,
-                    "X-Goog-FieldMask": (
-                        "places.displayName,places.formattedAddress,"
-                        "places.location,places.rating,places.userRatingCount,"
-                        "places.currentOpeningHours,places.nationalPhoneNumber,"
-                        "places.businessStatus"
-                    ),
-                },
-                json={
-                    "textQuery": query,
-                    "locationRestriction": {
-                        "circle": {
-                            "center": {"latitude": lat, "longitude": lng},
-                            "radius": float(radius),
-                        }
-                    },
-                    "maxResultCount": 8,
-                    "rankPreference": "DISTANCE",
+            # POI search — best for typed places (restaurant, ATM, etc.)
+            r = await client.get(
+                f"https://api.tomtom.com/search/2/poiSearch/{query}.json",
+                params={
+                    "key": api_key,
+                    "lat": lat,
+                    "lon": lng,
+                    "radius": radius,
+                    "limit": 8,
+                    "language": "en-GB",
+                    "countrySet": "NG",
                 },
             )
             data = r.json()
-            places_new = data.get("places", [])
+            raw = data.get("results", [])
 
-        if places_new:
-            results = []
-            for p in places_new:
-                loc = p.get("location", {})
-                p_lat = loc.get("latitude")
-                p_lng = loc.get("longitude")
-                if not p_lat or not p_lng:
-                    continue
-                dist = _haversine(lat, lng, p_lat, p_lng)
-                dist_str = f"{round(dist / 1000, 1)} km" if dist >= 1000 else f"{dist} m"
-                rating = p.get("rating", "")
-                is_open = p.get("currentOpeningHours", {}).get("openNow")
-                results.append({
-                    "name": p.get("displayName", {}).get("text", "Unknown"),
-                    "lat": p_lat,
-                    "lng": p_lng,
-                    "distance_m": dist,
-                    "distance_str": dist_str,
-                    "address": p.get("formattedAddress", ""),
-                    "rating": rating,
-                    "open_now": is_open,
-                    "open_str": "Open now" if is_open else ("Closed" if is_open is False else ""),
-                    "phone": p.get("nationalPhoneNumber", ""),
-                    "display": f"{p.get('displayName', {}).get('text', 'Unknown')}{f' ⭐{rating}' if rating else ''} — {dist_str}",
-                })
-            results.sort(key=lambda x: x["distance_m"])
-            return results
-
-        # Fallback: legacy Places Nearby Search
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r2 = await client.get(
-                "https://maps.googleapis.com/maps/api/place/textsearch/json",
-                params={
-                    "query": f"{query} near me",
-                    "location": f"{lat},{lng}",
-                    "radius": radius,
-                    "key": api_key,
-                },
-            )
-            data2 = r2.json()
+            # Fallback: fuzzy search (handles brand names, custom queries)
+            if not raw:
+                r2 = await client.get(
+                    f"https://api.tomtom.com/search/2/search/{query}.json",
+                    params={
+                        "key": api_key,
+                        "lat": lat,
+                        "lon": lng,
+                        "radius": radius,
+                        "limit": 8,
+                        "language": "en-GB",
+                        "countrySet": "NG",
+                    },
+                )
+                raw = r2.json().get("results", [])
 
         results = []
-        for p in data2.get("results", [])[:8]:
-            loc = p.get("geometry", {}).get("location", {})
-            p_lat, p_lng = loc.get("lat"), loc.get("lng")
+        for item in raw:
+            pos = item.get("position", {})
+            p_lat = pos.get("lat")
+            p_lng = pos.get("lon")
             if not p_lat or not p_lng:
                 continue
-            dist = _haversine(lat, lng, p_lat, p_lng)
-            dist_str = f"{round(dist / 1000, 1)} km" if dist >= 1000 else f"{dist} m"
-            rating = p.get("rating", "")
+            dist = item.get("dist") or _haversine(lat, lng, p_lat, p_lng)
+            dist_str = f"{round(dist / 1000, 1)} km" if dist >= 1000 else f"{int(dist)} m"
+            poi = item.get("poi", {})
+            address = item.get("address", {})
+            name = poi.get("name") or address.get("freeformAddress", "Unknown")
             results.append({
-                "name": p.get("name", "Unknown"),
+                "name": name,
                 "lat": p_lat,
                 "lng": p_lng,
-                "distance_m": dist,
+                "distance_m": int(dist),
                 "distance_str": dist_str,
-                "address": p.get("vicinity", ""),
-                "rating": rating,
-                "open_now": p.get("opening_hours", {}).get("open_now"),
-                "open_str": "",
-                "phone": "",
-                "display": f"{p.get('name', 'Unknown')}{f' ⭐{rating}' if rating else ''} — {dist_str}",
+                "address": address.get("freeformAddress", ""),
+                "phone": poi.get("phone", ""),
+                "category": (poi.get("categories") or [""])[0],
+                "display": f"{name} — {dist_str}",
             })
+
         results.sort(key=lambda x: x["distance_m"])
         return results
 
@@ -198,29 +136,28 @@ async def get_route_and_traffic(
     destination_lat: float,
     destination_lng: float,
     destination_label: str = "destination",
-    mode: str = "DRIVE",
+    mode: str = "car",
 ) -> dict:
     """
-    Get real-time traffic-aware route using Google Routes API.
+    Get real-time traffic-aware route using TomTom Routing API.
 
     ALWAYS use this for travel time and directions questions:
     - "how long to get to work?"
     - "how do I get home from here?"
     - "directions to [place]"
-    - "is there traffic on my way to work?"
+    - "is there traffic on my way?"
     - "should I leave now or wait?"
-    - "what's the fastest route to [destination]?"
 
     Args:
         user_id: The user's UUID
         destination_lat: Destination latitude
         destination_lng: Destination longitude
         destination_label: Human-readable destination name (e.g. "Work", "Home")
-        mode: DRIVE, WALK, BICYCLE, TRANSIT
+        mode: car, pedestrian, bicycle, motorcycle
     """
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
-        return {"error": "Google Maps not configured"}
+        return {"error": "TomTom API key not configured"}
 
     lat, lng = await _get_user_location(user_id)
     if not lat:
@@ -228,77 +165,68 @@ async def get_route_and_traffic(
 
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
-            r = await client.post(
-                "https://routes.googleapis.com/directions/v2:computeRoutes",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Goog-Api-Key": api_key,
-                    "X-Goog-FieldMask": (
-                        "routes.duration,routes.distanceMeters,"
-                        "routes.polyline,routes.staticDuration"
-                    ),
-                },
-                json={
-                    "origin": {
-                        "location": {"latLng": {"latitude": lat, "longitude": lng}}
-                    },
-                    "destination": {
-                        "location": {
-                            "latLng": {
-                                "latitude": destination_lat,
-                                "longitude": destination_lng,
-                            }
-                        }
-                    },
+            r = await client.get(
+                f"https://api.tomtom.com/routing/1/calculateRoute/"
+                f"{lat},{lng}:{destination_lat},{destination_lng}/json",
+                params={
+                    "key": api_key,
                     "travelMode": mode,
-                    "routingPreference": "TRAFFIC_AWARE",
-                    "departureTime": "now",
-                    "computeAlternativeRoutes": False,
-                    "languageCode": "en-US",
-                    "units": "METRIC",
+                    "traffic": "true",
+                    "routeType": "fastest",
+                    "computeTravelTimeFor": "all",
                 },
             )
+            if r.status_code != 200:
+                print(f"[maps] TomTom routing HTTP {r.status_code}: {r.text[:200]}")
+                return {"error": "Route not available", "duration_minutes": None}
             data = r.json()
 
-        if "routes" not in data or not data["routes"]:
-            print(f"[maps] Routes API response: {data}")
-            return {"error": "No route found"}
+        routes = data.get("routes", [])
+        if not routes:
+            return {"error": "No route found", "duration_minutes": None}
 
-        route = data["routes"][0]
+        summary = routes[0].get("summary", {})
+        duration_s          = summary.get("travelTimeInSeconds", 0)
+        duration_no_traffic = summary.get("noTrafficTravelTimeInSeconds", duration_s)
+        distance_m          = summary.get("lengthInMeters", 0)
 
-        duration_s = int(route.get("duration", "0s").rstrip("s"))
-        static_s   = int(route.get("staticDuration", route.get("duration", "0s")).rstrip("s"))
-        minutes_traffic    = int(duration_s / 60)
-        minutes_no_traffic = int(static_s / 60)
-        distance_m = route.get("distanceMeters", 0)
-        km = round(distance_m / 1000, 1)
-
-        delay = minutes_traffic - minutes_no_traffic
-        if delay > 10:
-            traffic_status = f"Heavy traffic — {delay} min delay"
-        elif delay > 3:
-            traffic_status = f"Moderate traffic — {delay} min delay"
-        else:
-            traffic_status = "Light traffic"
+        minutes            = int(duration_s / 60)
+        minutes_no_traffic = int(duration_no_traffic / 60)
+        km                 = round(distance_m / 1000, 1)
+        delay              = minutes - minutes_no_traffic
 
         if delay > 15:
+            traffic_status = f"Heavy traffic — {delay} min delay"
             advice = (
-                f"Traffic is bad right now — {minutes_traffic} min vs "
-                f"{minutes_no_traffic} min without traffic. "
-                f"Consider waiting 30-60 min or taking an alternate route."
+                f"Traffic is bad right now — {minutes} min vs {minutes_no_traffic} min without traffic. "
+                f"Consider waiting 30-60 min or leaving now if you can't wait."
             )
         elif delay > 5:
-            advice = f"Some traffic on your route. Expect {minutes_traffic} min to {destination_label}."
+            traffic_status = f"Moderate traffic — {delay} min delay"
+            advice = f"Some traffic on your route. Expect {minutes} min to {destination_label}."
         else:
-            advice = f"Roads are fairly clear. About {minutes_traffic} min to {destination_label}."
+            traffic_status = "Light traffic"
+            advice = f"Roads are clear. About {minutes} min to {destination_label}."
 
-        encoded = route.get("polyline", {}).get("encodedPolyline", "")
-        waypoints = _decode_polyline(encoded) if encoded else [
-            [lat, lng], [destination_lat, destination_lng]
-        ]
+        # Extract waypoints from route leg points
+        waypoints = []
+        for leg in routes[0].get("legs", []):
+            for pt in leg.get("points", []):
+                waypoints.append([pt["latitude"], pt["longitude"]])
+
+        # Downsample to 100 points max for map performance
+        if len(waypoints) > 100:
+            step = max(1, len(waypoints) // 100)
+            waypoints = waypoints[::step]
+            # Always keep destination
+            if waypoints[-1] != [destination_lat, destination_lng]:
+                waypoints.append([destination_lat, destination_lng])
+
+        if not waypoints:
+            waypoints = [[lat, lng], [destination_lat, destination_lng]]
 
         return {
-            "duration_minutes": minutes_traffic,
+            "duration_minutes": minutes,
             "duration_no_traffic_minutes": minutes_no_traffic,
             "traffic_delay_minutes": delay,
             "distance_km": km,
@@ -306,17 +234,13 @@ async def get_route_and_traffic(
             "advice": advice,
             "waypoints": waypoints,
             "origin": {"lat": lat, "lng": lng},
-            "destination": {
-                "lat": destination_lat,
-                "lng": destination_lng,
-                "label": destination_label,
-            },
-            "summary": f"{minutes_traffic} min with traffic ({km} km) — {traffic_status}",
+            "destination": {"lat": destination_lat, "lng": destination_lng, "label": destination_label},
+            "summary": f"{minutes} min with traffic ({km} km) — {traffic_status}",
         }
 
     except Exception as e:
         print(f"[maps] get_route_and_traffic error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "duration_minutes": None}
 
 
 @tool
@@ -352,12 +276,12 @@ async def check_traffic_to_saved_location(
 
         d = res.data
         if location_type == "work":
-            dest_lat  = d.get("work_lat")
-            dest_lng  = d.get("work_lng")
+            dest_lat   = d.get("work_lat")
+            dest_lng   = d.get("work_lng")
             dest_label = d.get("work_address") or "Work"
         else:
-            dest_lat  = d.get("home_lat")
-            dest_lng  = d.get("home_lng")
+            dest_lat   = d.get("home_lat")
+            dest_lng   = d.get("home_lng")
             dest_label = d.get("home_address") or "Home"
 
         if not dest_lat or not dest_lng:
@@ -373,7 +297,7 @@ async def check_traffic_to_saved_location(
             "destination_lat": dest_lat,
             "destination_lng": dest_lng,
             "destination_label": dest_label,
-            "mode": "DRIVE",
+            "mode": "car",
         })
         result["destination_type"] = location_type
         return result
@@ -388,40 +312,42 @@ async def search_place_by_name(
     place_name: str,
 ) -> dict:
     """
-    Search for a specific place by name and get its coordinates.
+    Search for a specific named place and get its coordinates.
 
-    Use this when user mentions a specific place by name and wants
+    Use when user mentions a specific place by name and wants
     directions to it or wants to know where it is:
     - "how do I get to Blenco Supermarket?"
     - "where is Duchess International Hospital?"
     - "find Wema Bank Marina branch"
-    - directions to any named place
 
-    After getting the result, pass the coordinates to get_route_and_traffic
+    After getting coordinates, pass them to get_route_and_traffic
     to give the user directions.
 
     Args:
         user_id: The user's UUID
-        place_name: The exact or approximate name of the place
+        place_name: The name of the place to find
     """
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
-        return {"error": "Google Maps not configured"}
+        return {"error": "TomTom API key not configured"}
 
     lat, lng = await _get_user_location(user_id)
 
     try:
         params: dict = {
-            "query": f"{place_name} Lagos Nigeria",
             "key": api_key,
+            "limit": 1,
+            "countrySet": "NG",
+            "language": "en-GB",
         }
         if lat:
-            params["location"] = f"{lat},{lng}"
-            params["radius"] = "50000"
+            params["lat"] = lat
+            params["lon"] = lng
+            params["radius"] = 50000
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(
-                "https://maps.googleapis.com/maps/api/place/textsearch/json",
+                f"https://api.tomtom.com/search/2/search/{place_name} Lagos.json",
                 params=params,
             )
             data = r.json()
@@ -431,21 +357,23 @@ async def search_place_by_name(
             return {"error": f"Could not find '{place_name}'"}
 
         p = results[0]
-        loc = p.get("geometry", {}).get("location", {})
-        p_lat = loc.get("lat")
-        p_lng = loc.get("lng")
+        pos = p.get("position", {})
+        p_lat = pos.get("lat")
+        p_lng = pos.get("lon")
+        dist = p.get("dist") or (_haversine(lat, lng, p_lat, p_lng) if lat and p_lat else 0)
+        dist_str = f"{round(dist / 1000, 1)} km away" if dist >= 1000 else f"{int(dist)} m away"
 
-        dist = _haversine(lat, lng, p_lat, p_lng) if lat and p_lat else 0
-        dist_str = f"{round(dist / 1000, 1)} km away" if dist >= 1000 else f"{dist} m away"
+        poi = p.get("poi", {})
+        address = p.get("address", {})
 
         return {
-            "name": p.get("name"),
+            "name": poi.get("name") or place_name,
             "lat": p_lat,
             "lng": p_lng,
-            "address": p.get("formatted_address", ""),
-            "rating": p.get("rating", ""),
+            "address": address.get("freeformAddress", ""),
             "distance_str": dist_str,
-            "distance_m": dist,
+            "distance_m": int(dist),
+            "phone": poi.get("phone", ""),
         }
 
     except Exception as e:
