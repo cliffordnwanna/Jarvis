@@ -19,6 +19,7 @@ export default function HomePage() {
   const [worldState, setWorldState] = useState<WorldState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
   const [userToken, setUserToken] = useState<string | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -65,11 +66,13 @@ export default function HomePage() {
       if (!session) { router.push('/login'); return }
       const ok = await checkOnboarding(session.access_token)
       if (ok) setUserToken(session.access_token)
+      setAuthChecked(true)
     })
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_, session) => {
       if (!session) { router.push('/login'); return }
       const ok = await checkOnboarding(session.access_token)
       if (ok) setUserToken(session.access_token)
+      setAuthChecked(true)
     })
     return () => subscription.unsubscribe()
   }, [router, checkOnboarding])
@@ -582,7 +585,7 @@ export default function HomePage() {
             </div>
 
             {/* Input */}
-            <div className="shrink-0 px-3 py-2 border-t border-jarvis-border bg-jarvis-surface">
+            <div className="shrink-0 px-3 pt-2 pb-[max(8px,env(safe-area-inset-bottom))] border-t border-jarvis-border bg-jarvis-surface">
               <div className="flex items-end gap-1.5">
                 <textarea
                   value={input}
@@ -610,7 +613,7 @@ export default function HomePage() {
                   <Send size={18} />
                 </button>
               </div>
-              {!userToken && (
+              {authChecked && !userToken && (
                 <p className="text-xs text-jarvis-muted mt-1 text-center">
                   <a href="/login" className="text-jarvis-accent hover:underline">Sign in</a> to chat
                 </p>
