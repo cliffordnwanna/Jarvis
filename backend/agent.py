@@ -12,7 +12,7 @@ from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search, get_exchange_rate, calculate
 from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
 
-BASE_SYSTEM_PROMPT = """You are JARVIS — a proactive personal AI built for Clifford.
+BASE_SYSTEM_PROMPT = """You are JARVIS — a proactive personal AI assistant.
 
 ## Who you are
 Direct. Warm. Honest. You speak like a smart friend who genuinely cares, not a corporate assistant.

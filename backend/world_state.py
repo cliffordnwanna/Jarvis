@@ -673,6 +673,6 @@ Calendar: {ws.get('calendar', {}).get('events_today_total', 0)} meetings today
 - Never say "I don't have access to" — use what you have
 
 ## User
-Name: {user_preferences.get('name', 'Clifford')}
+Name: {user_preferences.get('name', 'there')}
 Goals: {', '.join([g.get('title', '') for g in g.get('active_goals', [])])}
 """

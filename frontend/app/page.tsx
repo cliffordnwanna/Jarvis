@@ -36,6 +36,7 @@ export default function HomePage() {
   } | null>(null)
   const [currentTime, setCurrentTime] = useState<string>('')
   const [contextReady, setContextReady] = useState(false)
+  const [userName, setUserName] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const getToken = async (): Promise<string | null> => {
@@ -54,6 +55,7 @@ export default function HomePage() {
           router.push('/onboarding')
           return false
         }
+        setUserName(profile.display_name)
       }
     } catch (e) {
       console.log('[onboarding] check failed, proceeding:', e)
@@ -542,7 +544,7 @@ export default function HomePage() {
             <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
               {messages.length === 0 && (
                 <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-4">
-                  <p className="text-xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, Clifford.</p>
+                  <p className="text-xl font-semibold text-jarvis-text">Good {getTimeOfDay()}, {userName || 'there'}.</p>
                   <p className="text-jarvis-muted text-sm">What's on your mind?</p>
                 </div>
               )}

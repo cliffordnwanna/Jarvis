@@ -4,9 +4,38 @@ JARVIS Maps Tools — powered by TomTom APIs (no billing required, real traffic 
 import os
 import math
 import httpx
+from datetime import date as date_type
 from langchain_core.tools import tool
 from backend.db.cache import cache_get
 from backend.db.postgres import get_supabase
+
+TOMTOM_DAILY_LIMIT = 80  # calls per user per day
+
+
+async def _check_and_increment_tomtom(user_id: str) -> bool:
+    """
+    Returns True if allowed, False if daily limit reached.
+    Checks BEFORE incrementing to avoid race-condition off-by-one.
+    Fails open on DB error.
+    """
+    db = get_supabase()
+    today = date_type.today().isoformat()
+    try:
+        res = db.table("api_usage") \
+            .select("tomtom_calls") \
+            .eq("user_id", user_id) \
+            .eq("date", today) \
+            .maybe_single() \
+            .execute()
+        current = res.data["tomtom_calls"] if res.data else 0
+        if current >= TOMTOM_DAILY_LIMIT:
+            print(f"[maps] Rate limit: {user_id} at {current}/{TOMTOM_DAILY_LIMIT} today")
+            return False
+        db.rpc("increment_tomtom_usage", {"p_user_id": user_id, "p_date": today}).execute()
+        return True
+    except Exception as e:
+        print(f"[maps] Rate limit check error (allowing): {e}")
+        return True
 
 
 def _haversine(lat1, lng1, lat2, lng2) -> int:
@@ -59,6 +88,9 @@ async def find_nearby_places(
     api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
         return [{"error": "TomTom API key not configured"}]
+
+    if not await _check_and_increment_tomtom(user_id):
+        return [{"error": "You've used your daily map searches. Limit resets at midnight. Try asking me something else!"}]
 
     lat, lng = await _get_user_location(user_id)
     if not lat:
@@ -158,6 +190,9 @@ async def get_route_and_traffic(
     api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
         return {"error": "TomTom API key not configured"}
+
+    if not await _check_and_increment_tomtom(user_id):
+        return {"error": "You've used your daily map searches. Limit resets at midnight. Try asking me something else!"}
 
     lat, lng = await _get_user_location(user_id)
     if not lat:
@@ -330,6 +365,9 @@ async def search_place_by_name(
     api_key = os.getenv("TOMTOM_API_KEY")
     if not api_key:
         return {"error": "TomTom API key not configured"}
+
+    if not await _check_and_increment_tomtom(user_id):
+        return {"error": "You've used your daily map searches. Limit resets at midnight. Try asking me something else!"}
 
     lat, lng = await _get_user_location(user_id)
 
