@@ -357,7 +357,10 @@ export default function HomePage() {
 
       // After stream ends — handle timer, map, clean sentinels
       if (assistantContent) {
-        const msgIdx = messages.length  // index of the assistant message just added
+        // messages (stale closure) has N items before this sendMessage call.
+        // We added userMsg (+1) then the assistant placeholder (+1), so
+        // the assistant message sits at index N+1.
+        const msgIdx = messages.length + 1
         handleTimerFromResponse(assistantContent, msgIdx)
         handleMapFromResponse(assistantContent, msgIdx)
         const cleaned = assistantContent
