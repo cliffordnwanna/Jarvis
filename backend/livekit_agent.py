@@ -18,6 +18,15 @@ from backend.db.cache import cache_get
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+_http_client: httpx.AsyncClient = None
+
+
+async def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=12.0)
+    return _http_client
+
 
 JARVIS_VOICE_PROMPT = """You are JARVIS, a proactive personal AI assistant in voice mode.
 
@@ -142,12 +151,12 @@ class JARVISAgent(Agent):
             to_currency: Target currency e.g. NGN, USD, EUR
         """
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    f"https://open.er-api.com/v6/latest/{from_currency.upper()}",
-                    timeout=8.0,
-                )
-                data = r.json()
+            client = await get_http_client()
+            r = await client.get(
+                f"https://open.er-api.com/v6/latest/{from_currency.upper()}",
+                timeout=8.0,
+            )
+            data = r.json()
                 rate = data.get("rates", {}).get(to_currency.upper())
                 if rate:
                     return f"1 {from_currency.upper()} equals {rate:.2f} {to_currency.upper()}."
@@ -415,21 +424,21 @@ class JARVISAgent(Agent):
             return "I can't get your location right now."
 
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    f"https://api.tomtom.com/search/2/poiSearch/{query}.json",
-                    params={
-                        "key": api_key,
-                        "lat": lat,
-                        "lon": lng,
-                        "radius": radius,
-                        "limit": 4,
-                        "language": "en-GB",
-                        "countrySet": "NG",
-                    },
-                    timeout=10.0,
-                )
-                data = r.json()
+            client = await get_http_client()
+            r = await client.get(
+                f"https://api.tomtom.com/search/2/poiSearch/{query}.json",
+                params={
+                    "key": api_key,
+                    "lat": lat,
+                    "lon": lng,
+                    "radius": radius,
+                    "limit": 4,
+                    "language": "en-GB",
+                    "countrySet": "NG",
+                },
+                timeout=10.0,
+            )
+            data = r.json()
 
             results = [item for item in data.get("results", [])
                        if item.get("poi", {}).get("name")][:3]
@@ -520,19 +529,19 @@ class JARVISAgent(Agent):
 
         else:
             try:
-                async with httpx.AsyncClient() as client:
-                    r = await client.get(
-                        f"https://api.tomtom.com/search/2/search/{destination} Lagos.json",
-                        params={
-                            "key": api_key,
-                            "limit": 1,
-                            "countrySet": "NG",
-                            "lat": origin_lat,
-                            "lon": origin_lng,
-                        },
-                        timeout=8.0,
-                    )
-                    data = r.json()
+                client = await get_http_client()
+                r = await client.get(
+                    f"https://api.tomtom.com/search/2/search/{destination} Lagos.json",
+                    params={
+                        "key": api_key,
+                        "limit": 1,
+                        "countrySet": "NG",
+                        "lat": origin_lat,
+                        "lon": origin_lng,
+                    },
+                    timeout=8.0,
+                )
+                data = r.json()
                 results = data.get("results", [])
                 if not results:
                     return f"I couldn't find {destination} on the map."
@@ -545,20 +554,20 @@ class JARVISAgent(Agent):
                 return f"I couldn't locate {destination}."
 
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    f"https://api.tomtom.com/routing/1/calculateRoute/"
-                    f"{origin_lat},{origin_lng}:{dest_lat},{dest_lng}/json",
-                    params={
-                        "key": api_key,
-                        "travelMode": "car",
-                        "traffic": "true",
-                        "routeType": "fastest",
-                        "computeTravelTimeFor": "all",
-                    },
-                    timeout=12.0,
-                )
-                data = r.json()
+            client = await get_http_client()
+            r = await client.get(
+                f"https://api.tomtom.com/routing/1/calculateRoute/"
+                f"{origin_lat},{origin_lng}:{dest_lat},{dest_lng}/json",
+                params={
+                    "key": api_key,
+                    "travelMode": "car",
+                    "traffic": "true",
+                    "routeType": "fastest",
+                    "computeTravelTimeFor": "all",
+                },
+                timeout=12.0,
+            )
+            data = r.json()
 
             routes = data.get("routes", [])
             if not routes:
@@ -797,38 +806,40 @@ async def get_user_context(user_id: str) -> str:
 
 
 async def entrypoint(ctx: JobContext):
-    await ctx.connect()
+    try:
+        await ctx.connect()
 
-    room_name = ctx.room.name
-    user_id = room_name.replace("jarvis-", "") if room_name.startswith("jarvis-") else ""
+        room_name = ctx.room.name
+        user_id = room_name.replace("jarvis-", "") if room_name.startswith("jarvis-") else ""
 
-    logger.info(f"[livekit] Room: {room_name}, user: {user_id}")
+        logger.info(f"[livekit] Room: {room_name}, user: {user_id}")
 
-    user_context = await get_user_context(user_id) if user_id else ""
+        user_context = ""
+        try:
+            user_context = await get_user_context(user_id) if user_id else ""
+            logger.info(f"[livekit] Context loaded: {len(user_context)} chars")
+        except Exception as e:
+            logger.error(f"[livekit] Context load failed: {e}")
 
-    session = AgentSession(
-        stt=openai.STT(
-            model="whisper-1",
-            language="en",
-            prompt="JARVIS",
-        ),
-        llm=openai.LLM(model="gpt-4o-mini"),
-        tts=openai.TTS(
-            voice="alloy",
-            speed=1.1,
-        ),
-    )
+        session = AgentSession(
+            stt=openai.STT(model="whisper-1", language="en"),
+            llm=openai.LLM(model="gpt-4o-mini"),
+            tts=openai.TTS(voice="alloy", speed=1.0),
+        )
 
-    agent = JARVISAgent(user_id=user_id, user_context=user_context)
+        agent = JARVISAgent(user_id=user_id, user_context=user_context)
 
-    await session.start(
-        room=ctx.room,
-        agent=agent,
-    )
+        await session.start(room=ctx.room, agent=agent)
+        logger.info("[livekit] Session started, generating greeting")
 
-    await session.generate_reply(
-        instructions="Say hello to the user by name in one short sentence."
-    )
+        await session.generate_reply(
+            instructions="Greet the user by name warmly. One sentence only. Be brief."
+        )
+        logger.info("[livekit] Greeting generated")
+
+    except Exception as e:
+        logger.error(f"[livekit] Entrypoint crashed: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
