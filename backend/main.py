@@ -182,22 +182,7 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
     time_str = now_local.strftime("%H:%M")
     tomorrow_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Pre-compute next occurrence of each weekday (always future)
-    def next_weekday_date(target_weekday: int) -> str:
-        days_ahead = (target_weekday - now_local.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return (now_local + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-
-    next_days = {
-        "Monday":    next_weekday_date(0),
-        "Tuesday":   next_weekday_date(1),
-        "Wednesday": next_weekday_date(2),
-        "Thursday":  next_weekday_date(3),
-        "Friday":    next_weekday_date(4),
-        "Saturday":  next_weekday_date(5),
-        "Sunday":    next_weekday_date(6),
-    }
+    day_after_str = (now_local + timedelta(days=2)).strftime("%Y-%m-%d")
 
     if world_state:
         temporal = world_state.get("temporal", {})
@@ -244,57 +229,19 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
         lng = location.get("lng") or world_state.get("_meta", {}).get("lng")
         coords_line = f"GPS coordinates: {lat}, {lng}\n" if lat and lng else ""
 
-        world_context = f"""=== CURRENT DATE & TIME (USE THESE EXACT VALUES) ===
-Today is: {today_str}
-Current time: {time_str} ({user_tz_str})
-Time of day: {time_of_day}
-Today ISO: {now_local.strftime("%Y-%m-%d")}
-Tomorrow ISO: {tomorrow_str}
-
-Next weekdays:
-- Next Monday: {next_days['Monday']}
-- Next Tuesday: {next_days['Tuesday']}
-- Next Wednesday: {next_days['Wednesday']}
-- Next Thursday: {next_days['Thursday']}
-- Next Friday: {next_days['Friday']}
-- Next Saturday: {next_days['Saturday']}
-- Next Sunday: {next_days['Sunday']}
-
-IMPORTANT: Always use ISO dates above for reminders. Never calculate dates yourself.
-
-=== CURRENT LOCATION ===
-Neighbourhood: {district}
-City: {city}
-State: {state}
-Country: {country}
-Full location: {location_str}
-{coords_line}
-
-=== CURRENT WEATHER ===
-Temperature: {temp_c}°C (feels like {feels_like}°C)
-Condition: {description}
-Rain: {rain_status}
-Tomorrow: {tomorrow_cond}, rain probability {int(tomorrow_rain * 100)}%
-Humidity: {humidity}%
-Wind: {wind} km/h
-UV index: {uv}
-"""
+        world_context = (
+            f"DATE: {today_str} | TIME: {time_str} ({user_tz_str}) | {time_of_day}\n"
+            f"Today ISO: {now_local.strftime('%Y-%m-%d')} | Tomorrow: {tomorrow_str} | Day after: {day_after_str}\n"
+            f"For dates beyond tomorrow, calculate from today's ISO date and day-of-week.\n"
+            f"LOCATION: {location_str}{(' | GPS: ' + str(lat) + ', ' + str(lng)) if lat and lng else ''}\n"
+            f"WEATHER: {temp_c}°C (feels {feels_like}°C), {description}. {rain_status} Tomorrow: {tomorrow_cond} {int(tomorrow_rain * 100)}% rain.\n"
+        )
     else:
-        world_context = f"""=== CURRENT DATE & TIME ===
-Today is: {today_str}
-Current time: {time_str}
-Today ISO: {now_local.strftime("%Y-%m-%d")}
-Tomorrow ISO: {tomorrow_str}
-
-Next weekdays:
-- Next Monday: {next_days['Monday']}
-- Next Tuesday: {next_days['Tuesday']}
-- Next Wednesday: {next_days['Wednesday']}
-- Next Thursday: {next_days['Thursday']}
-- Next Friday: {next_days['Friday']}
-
-World state not available yet — user needs to grant location permission.
-"""
+        world_context = (
+            f"DATE: {today_str} | TIME: {time_str}\n"
+            f"Today ISO: {now_local.strftime('%Y-%m-%d')} | Tomorrow: {tomorrow_str} | Day after: {day_after_str}\n"
+            "Location/weather not available — user needs to grant location permission.\n"
+        )
 
     profile = await get_user_profile(user_id)
     user_name = profile.get("display_name") or ""
@@ -331,10 +278,12 @@ World state not available yet — user needs to grant location permission.
     work_addr = profile.get("work_address") or "Work"
     home_line = (
         f"Home: {home_addr} (coordinates: {home_lat}, {home_lng})\n"
+        f"→ For directions home: get_route_and_traffic(user_id, dest_lat={home_lat}, dest_lng={home_lng}, destination_label='Home')\n"
         if home_lat and home_lng else ""
     )
     work_line = (
         f"Work: {work_addr} (coordinates: {work_lat}, {work_lng})\n"
+        f"→ For directions to work: get_route_and_traffic(user_id, dest_lat={work_lat}, dest_lng={work_lng}, destination_label='Work')\n"
         if work_lat and work_lng else ""
     )
     system_prompt = (
@@ -342,8 +291,6 @@ World state not available yet — user needs to grant location permission.
         + name_line
         + home_line
         + work_line
-        + f"TODAY'S DATE: {today_str}\n"
-        + f"TOMORROW'S DATE: {tomorrow_str} (use this exact date when user says 'tomorrow')\n\n"
         + conversation_context
         + world_context
         + "\n"

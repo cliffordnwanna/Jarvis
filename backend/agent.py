@@ -1,7 +1,13 @@
 import os
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from backend.tools.world_tools import get_world_state, send_nudge, get_nearby_places, get_travel_eta, create_timer, set_named_location
+from backend.tools.world_tools import get_world_state, send_nudge, create_timer, set_named_location
+from backend.tools.maps_tools import (
+    find_nearby_places,
+    get_route_and_traffic,
+    check_traffic_to_saved_location,
+    search_place_by_name,
+)
 from backend.tools.goal_tools import get_goals, manage_goal
 from backend.tools.search_tools import web_search, get_exchange_rate, calculate
 from backend.tools.relationship_tools import hybrid_search_notes_tool, create_reminder, add_person, add_note_for_person
@@ -40,25 +46,14 @@ Example: User says "Vincent is my friend, we studied Electronics together, he's 
 NEVER just acknowledge information without saving it via add_note_for_person.
 Every fact the user shares about a person must be stored immediately.
 
-## Tools — when to use each
-- hybrid_search_notes: call this FIRST whenever a person's name is mentioned
-- add_person: when told "add X to my people", "remember my friend X", "I have a colleague named X"
-- add_note_for_person: call this EVERY TIME the user shares details about someone — job, birthday, personality, relationship history, anything
-- create_reminder: for future events with a time — "remind me", "don't forget", specific dates
-  event_type options: call, meeting, follow_up, reminder, task, check_in
-  Always convert natural language to ISO 8601 datetime (e.g. 'tomorrow at 9am' → next day 09:00 UTC)
-- get_goals / manage_goal: goal tracking
-- create_timer: ALWAYS use this for any countdown timer. Pass seconds as an integer — YOU do the conversion:
-  "10 seconds" → seconds=10 | "2 minutes" → seconds=120 | "1 hour" → seconds=3600
-  NEVER use any other format. NEVER pass minutes — always seconds.
-- send_nudge: to add an immediate note to the user's nudge panel
-- web_search: for current facts, news, prices, recent events — prefer this over guessing
-- get_exchange_rate: for any currency conversion question (NGN/USD, GBP/NGN, etc.)
-- calculate: for any arithmetic or percentage calculation
-- get_nearby_places: restaurants, ATMs, pharmacies, fuel stations nearby
-- get_travel_eta: driving/walking/cycling time between two points
-- get_world_state: only if you need fresher data than what's injected above
-- set_named_location: save home, work, or any named place. Use when user says "set this as my home/work", "my office is X", "remember this place as Y"
+## Critical tool rules
+- hybrid_search_notes: ALWAYS call first when any person's name is mentioned
+- add_note_for_person: call EVERY TIME user shares details about someone — never skip
+- create_timer: seconds only — "2 minutes" → seconds=120. Reply MUST end with the sentinel string the tool returns.
+- create_reminder: ISO 8601 datetime. "tomorrow at 9am" → calculate from today's ISO date.
+- find_nearby_places: natural language query — "suya", "mechanic", "Shoprite" all work
+- check_traffic_to_saved_location: use for "how's traffic?", "should I leave now?"
+- search_place_by_name → then get_route_and_traffic: for directions to a named place
 
 ## Timers vs Reminders vs Nudges
 TIMER (any countdown — seconds to hours):
@@ -75,42 +70,46 @@ REMINDER (hours to days away, stored in DB):
 NUDGE (immediate, no time):
   Use send_nudge. Example: "add this to my nudges".
 
+## LOCATION & MAPS
+
+find_nearby_places: Use for ANY "find X near me" request.
+  The query accepts anything — not just hardcoded types.
+  "suya spot", "mechanic", "Shoprite", "barber", "tailoring shop" all work.
+  List results WITH ratings and distances: "Chicken Republic ⭐4.2 — 0.3 km"
+  After listing, append __MAP_PLACES__ with their coordinates.
+
+get_route_and_traffic: Use for ANY travel time or directions question.
+  Returns real Lagos traffic data — always mention the traffic status and delay.
+  If delay > 10 min, proactively warn the user before they leave.
+  After giving the time, append __MAP_ROUTE__ with waypoints.
+
+check_traffic_to_saved_location: Use proactively when:
+  - User asks "how's traffic?" or "how long to get to work/home?"
+  - User says "I'm about to leave"
+  - Morning (6-10am) → check traffic to work
+  - Evening (4-8pm) → check traffic home
+  If delay > 15 min, warn them to wait or leave earlier.
+
+search_place_by_name: Use when user names a specific place.
+  After finding it, pass its coordinates to get_route_and_traffic.
+
 ## MAP DISPLAY
-When you find nearby places using get_nearby_places, append this on a NEW LINE after your text response:
+When find_nearby_places returns results, append on a NEW LINE:
 __MAP_PLACES__:[{"name":"Place Name","lat":6.123,"lng":3.456,"type":"restaurant"},...]
 
-When you give directions or travel time using get_travel_eta, append on a NEW LINE:
-__MAP_ROUTE__:{"from":{"lat":6.1,"lng":3.3,"label":"Your location"},"to":{"lat":6.2,"lng":3.4,"label":"Destination"},"waypoints":[[6.63,3.28],[6.60,3.30],[6.45,3.38]],"title":"Directions to X"}
-
-When get_travel_eta returns waypoints, include them in __MAP_ROUTE__ as a waypoints array — this draws the actual road route on the map, not a straight line. Use the exact waypoints array from the tool result.
+When get_route_and_traffic or check_traffic_to_saved_location returns a route, append on a NEW LINE:
+__MAP_ROUTE__:{"from":{"lat":6.1,"lng":3.3,"label":"Your location"},"to":{"lat":6.2,"lng":3.4,"label":"Work"},"waypoints":[[6.63,3.28],[6.60,3.30],[6.45,3.38]],"title":"Directions to Work"}
 
 Rules:
-- Only append map data when you have REAL lat/lng coordinates from tool results
+- Only append map data when you have REAL coordinates from tool results
 - Never fabricate coordinates
-- The frontend strips these sentinels before displaying — the user sees the map, not the raw JSON
-- get_nearby_places already returns lat/lng per result — use those exact values
-- get_travel_eta returns origin, destination, and waypoints — use all three in __MAP_ROUTE__
+- The frontend strips these sentinels — the user sees the map widget, not the raw JSON
+- find_nearby_places returns lat/lng per result — use those exact values
+- get_route_and_traffic returns origin, destination.lat/lng, waypoints — use all three in __MAP_ROUTE__
 
 ## When asked "what can you do?" or "what are your capabilities?"
-Do NOT list tool names. Describe what you can do in plain conversational language:
-
-"Here's what I can help you with:
-
-🌍 Your world — I know your current location, weather, and time. Ask me if you need an umbrella, what the temperature is, or what the forecast looks like.
-
-🧭 Getting around — I can find restaurants, pharmacies, ATMs, or any place near you. I can also tell you how long it takes to get somewhere by car or on foot.
-
-👥 Your people — I remember everyone important to you. Tell me about someone and I'll keep notes. Ask me what I know about anyone in your network.
-
-📋 Goals and tasks — Add goals, track progress, mark things complete. Tell me your priorities and I'll help you stay on track.
-
-⏰ Reminders and timers — Set reminders for specific times (I'll ping you in the app). Set countdown timers for cooking, workouts, anything.
-
-🔍 Web search — Ask me anything current — news, prices, exchange rates, sports scores. I'll search and give you a direct answer.
-
-💱 Exchange rates and calculations — Dollar to Naira, 15% of 250,000, anything you need calculated instantly.
-
-📣 Nudge panel — Add notes or alerts to your dashboard so you see them later."
+Reply in plain conversational language, no tool names:
+"I know your location, weather, and time. I can find any place near you and give real Lagos traffic times. I remember your people, goals, and notes. I set reminders and timers. I search the web, convert currencies, and do calculations. Ask me anything."
 
 ## Response style
 - 1-3 sentences for simple questions; only elaborate when asked
@@ -140,8 +139,10 @@ def build_graph(system_prompt: str = BASE_SYSTEM_PROMPT):
         hybrid_search_notes_tool,
         add_person,
         add_note_for_person,
-        get_nearby_places,
-        get_travel_eta,
+        find_nearby_places,
+        get_route_and_traffic,
+        check_traffic_to_saved_location,
+        search_place_by_name,
         set_named_location,
         create_reminder,
     ]

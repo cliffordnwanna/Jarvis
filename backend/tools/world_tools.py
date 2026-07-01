@@ -187,81 +187,140 @@ async def send_nudge(
     return {"status": "nudge_sent", "message": message}
 
 
+def _decode_google_polyline(encoded: str) -> list:
+    """Decode Google Encoded Polyline Algorithm to [[lat, lng], ...] pairs."""
+    result = []
+    index = lat = lng = 0
+    while index < len(encoded):
+        for is_lat in (True, False):
+            shift = result_val = 0
+            while True:
+                b = ord(encoded[index]) - 63
+                index += 1
+                result_val |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            delta = ~(result_val >> 1) if result_val & 1 else result_val >> 1
+            if is_lat:
+                lat += delta
+            else:
+                lng += delta
+        result.append([lat / 1e5, lng / 1e5])
+    return result
+
+
 @tool
-async def get_nearby_places(lat: float, lng: float, place_type: str = "restaurant", radius: int = 2000) -> list:
+async def get_nearby_places(
+    user_id: str,
+    place_type: str = "restaurant",
+    radius: int = 2000,
+) -> list:
     """
-    Find places near the user's current location using OpenStreetMap (free).
+    Find nearby places using Google Places API (best Nigeria/Lagos coverage).
 
     CALL THIS when user asks:
-    - "Where can I eat nearby?"
-    - "Is there a pharmacy near me?"
-    - "Find me an ATM"
+    - "Where can I eat nearby?" / "Find a restaurant near me"
+    - "Is there a pharmacy/ATM/bank/hospital near me?"
+    - "Find a church / mosque near me"
     - "What's near me?"
-    - "Where's the nearest hospital/fuel station/bank/church?"
+    - "Where's the nearest fuel station/supermarket?"
 
     place_type options: restaurant, cafe, hotel, hospital, pharmacy, atm, fuel,
-                        bank, supermarket, church, mosque, school, police
+                        bank, church, mosque, supermarket, school, police, gym
     radius: search radius in meters (default 2000m = 2km)
 
-    Returns list of places with name, lat, lng, and type.
+    Returns list of places with name, lat, lng, distance, rating, and address.
     """
-    type_map = {
-        "restaurant": ("amenity", "restaurant"),
-        "cafe":       ("amenity", "cafe"),
-        "pharmacy":   ("amenity", "pharmacy"),
-        "atm":        ("amenity", "atm"),
-        "fuel":       ("amenity", "fuel"),
-        "hospital":   ("amenity", "hospital"),
-        "supermarket": ("shop", "supermarket"),
-        "bank":       ("amenity", "bank"),
-        "hotel":      ("tourism", "hotel"),
-        "guest_house": ("tourism", "guest_house"),
-        "church":     ("amenity", "place_of_worship"),
-        "mosque":     ("amenity", "place_of_worship"),
-        "school":     ("amenity", "school"),
-        "police":     ("amenity", "police"),
-    }
-    tag_key, tag_val = type_map.get(place_type.lower(), ("amenity", place_type))
+    import os, math
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        return [{"error": "Google Maps API key not configured"}]
 
-    query = f"""[out:json][timeout:15];
-(
-  node["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
-  way["{tag_key}"="{tag_val}"](around:{radius},{lat},{lng});
-);
-out center 8;"""
+    ws = await cache_get(user_id)
+    if not ws:
+        return [{"error": "No location available"}]
+
+    location = ws.get("location", {})
+    lat = location.get("lat") or ws.get("_meta", {}).get("lat")
+    lng = location.get("lng") or ws.get("_meta", {}).get("lng")
+    if not lat or not lng:
+        return [{"error": "Could not determine your location"}]
+
+    type_map = {
+        "restaurant":  "restaurant",
+        "cafe":        "cafe",
+        "fastfood":    "meal_takeaway",
+        "hotel":       "lodging",
+        "hospital":    "hospital",
+        "pharmacy":    "pharmacy",
+        "atm":         "atm",
+        "fuel":        "gas_station",
+        "bank":        "bank",
+        "church":      "church",
+        "mosque":      "mosque",
+        "supermarket": "supermarket",
+        "school":      "school",
+        "police":      "police",
+        "gym":         "gym",
+        "parking":     "parking",
+    }
+    gtype = type_map.get(place_type.lower(), place_type)
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(
-                "https://overpass-api.de/api/interpreter",
-                data={"data": query},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
+                params={
+                    "location": f"{lat},{lng}",
+                    "radius": radius,
+                    "type": gtype,
+                    "key": api_key,
+                    "rankby": "prominence",
+                },
             )
             if r.status_code != 200:
-                print(f"[get_nearby_places] Overpass HTTP {r.status_code}")
+                print(f"[get_nearby_places] Google HTTP {r.status_code}: {r.text[:200]}")
                 return []
             data = r.json()
-            results = []
-            for el in data.get("elements", []):
-                tags = el.get("tags", {})
-                if not tags.get("name"):
-                    continue
-                el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
-                el_lng = el.get("lon") or (el.get("center") or {}).get("lon")
-                if not el_lat or not el_lng:
-                    continue
-                results.append({
-                    "name": tags["name"],
-                    "type": place_type,
-                    "lat": el_lat,
-                    "lng": el_lng,
-                    "address": tags.get("addr:street", ""),
-                    "phone": tags.get("phone", ""),
-                    "opening_hours": tags.get("opening_hours", ""),
-                })
-                if len(results) >= 8:
-                    break
-            return results
+
+        status = data.get("status")
+        if status not in ("OK", "ZERO_RESULTS"):
+            print(f"[get_nearby_places] Google error: {status} — {data.get('error_message', '')}")
+            return [{"error": f"Google Places error: {status}"}]
+
+        results = []
+        for place in data.get("results", [])[:8]:
+            loc = place.get("geometry", {}).get("location", {})
+            p_lat = loc.get("lat")
+            p_lng = loc.get("lng")
+            if not p_lat or not p_lng:
+                continue
+
+            dlat = math.radians(p_lat - lat)
+            dlng = math.radians(p_lng - lng)
+            a = (math.sin(dlat / 2) ** 2
+                 + math.cos(math.radians(lat)) * math.cos(math.radians(p_lat))
+                 * math.sin(dlng / 2) ** 2)
+            dist_m = int(6371000 * 2 * math.asin(math.sqrt(a)))
+            dist_str = f"{round(dist_m / 1000, 1)} km" if dist_m >= 1000 else f"{dist_m} m"
+
+            rating = place.get("rating", "")
+            results.append({
+                "name": place.get("name", "Unknown"),
+                "lat": p_lat,
+                "lng": p_lng,
+                "type": place_type,
+                "distance_m": dist_m,
+                "distance_str": dist_str,
+                "address": place.get("vicinity", ""),
+                "rating": rating,
+                "open_now": place.get("opening_hours", {}).get("open_now"),
+                "display": f"{place.get('name')}{f' ⭐{rating}' if rating else ''} — {dist_str}",
+            })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
     except Exception as e:
         print(f"[get_nearby_places] error: {e}")
         return []
@@ -276,7 +335,7 @@ async def get_travel_eta(
     mode: str = "driving",
 ) -> dict:
     """
-    Calculate travel time between two locations using OSRM (free).
+    Get accurate travel time with real Lagos traffic using Google Directions API.
 
     CALL THIS when user asks:
     - "How long will it take to get to work?"
@@ -284,62 +343,64 @@ async def get_travel_eta(
     - "How far is it to [location]?"
     - "Should I leave now to make it in time?"
 
-    mode options: driving, walking, cycling
-    Returns duration in minutes, distance in km, road waypoints for map drawing, and Lagos traffic note.
+    mode options: driving, walking, bicycling, transit
+    Returns duration in minutes, distance in km, road waypoints for the map, traffic note.
     """
-    import pytz
-    profiles = {"driving": "car", "walking": "foot", "cycling": "bike"}
-    profile = profiles.get(mode, "car")
+    import os
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        return {"error": "Google Maps API key not configured"}
 
-    async with httpx.AsyncClient() as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(
-                f"https://router.project-osrm.org/route/v1/{profile}/"
-                f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}",
-                params={"overview": "full", "geometries": "geojson"},
-                timeout=10.0,
-            )
-            data = r.json()
-            if data.get("code") == "Ok" and data.get("routes"):
-                route       = data["routes"][0]
-                duration_s  = route["duration"]
-                distance_m  = route["distance"]
-                raw_minutes = int(duration_s / 60)
-                distance_km = round(distance_m / 1000, 1)
-
-                # OSRM returns [lng, lat] pairs — swap to [lat, lng] for Leaflet
-                coordinates = route.get("geometry", {}).get("coordinates", [])
-                waypoints = [[c[1], c[0]] for c in coordinates]
-
-                # Lagos traffic multiplier (OSRM uses speed limits, not real traffic)
-                lagos_tz = pytz.timezone("Africa/Lagos")
-                hour = datetime.now(lagos_tz).hour
-                if 7 <= hour <= 10 or 17 <= hour <= 20:
-                    traffic_factor = 2.5
-                    traffic_note = "in current traffic (peak hours)"
-                elif 6 <= hour <= 7 or 10 <= hour <= 12 or 15 <= hour <= 17:
-                    traffic_factor = 1.8
-                    traffic_note = "in current traffic"
-                elif 22 <= hour or hour <= 5:
-                    traffic_factor = 1.0
-                    traffic_note = "at this hour (light traffic)"
-                else:
-                    traffic_factor = 1.4
-                    traffic_note = "in normal traffic"
-
-                realistic_minutes = int(raw_minutes * traffic_factor)
-
-                return {
-                    "duration_minutes": realistic_minutes,
-                    "without_traffic_minutes": raw_minutes,
-                    "traffic_note": traffic_note,
-                    "distance_km": distance_km,
+                "https://maps.googleapis.com/maps/api/directions/json",
+                params={
+                    "origin": f"{origin_lat},{origin_lng}",
+                    "destination": f"{dest_lat},{dest_lng}",
                     "mode": mode,
-                    "waypoints": waypoints,
-                    "origin": {"lat": origin_lat, "lng": origin_lng},
-                    "destination": {"lat": dest_lat, "lng": dest_lng},
-                    "summary": f"{realistic_minutes} min {traffic_note} ({distance_km} km)",
-                }
-        except Exception as e:
-            print(f"[get_travel_eta] OSRM error: {e}")
-        return {"error": "Route not available", "duration_minutes": None}
+                    "departure_time": "now",
+                    "traffic_model": "best_guess",
+                    "key": api_key,
+                },
+            )
+            if r.status_code != 200:
+                print(f"[get_travel_eta] Google HTTP {r.status_code}: {r.text[:200]}")
+                return {"error": "Route not available", "duration_minutes": None}
+            data = r.json()
+
+        if data.get("status") != "OK":
+            return {"error": f"Directions error: {data.get('status')}", "duration_minutes": None}
+
+        leg = data["routes"][0]["legs"][0]
+
+        if "duration_in_traffic" in leg:
+            duration_s = leg["duration_in_traffic"]["value"]
+            traffic_note = "with current traffic"
+        else:
+            duration_s = leg["duration"]["value"]
+            traffic_note = "estimated"
+
+        distance_m = leg["distance"]["value"]
+        minutes = int(duration_s / 60)
+        km = round(distance_m / 1000, 1)
+
+        encoded = data["routes"][0].get("overview_polyline", {}).get("points", "")
+        waypoints = _decode_google_polyline(encoded) if encoded else [
+            [origin_lat, origin_lng],
+            [dest_lat, dest_lng],
+        ]
+
+        return {
+            "duration_minutes": minutes,
+            "distance_km": km,
+            "traffic_note": traffic_note,
+            "mode": mode,
+            "waypoints": waypoints,
+            "origin": {"lat": origin_lat, "lng": origin_lng},
+            "destination": {"lat": dest_lat, "lng": dest_lng},
+            "summary": f"{minutes} min {traffic_note} ({km} km)",
+        }
+    except Exception as e:
+        print(f"[get_travel_eta] error: {e}")
+        return {"error": str(e), "duration_minutes": None}
