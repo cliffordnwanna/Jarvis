@@ -157,10 +157,10 @@ class JARVISAgent(Agent):
                 timeout=8.0,
             )
             data = r.json()
-                rate = data.get("rates", {}).get(to_currency.upper())
-                if rate:
-                    return f"1 {from_currency.upper()} equals {rate:.2f} {to_currency.upper()}."
-                return "Couldn't find that exchange rate."
+            rate = data.get("rates", {}).get(to_currency.upper())
+            if rate:
+                return f"1 {from_currency.upper()} equals {rate:.2f} {to_currency.upper()}."
+            return "Couldn't find that exchange rate."
         except Exception as e:
             return f"Exchange rate error: {e}"
 
