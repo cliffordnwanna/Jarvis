@@ -19,14 +19,21 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-JARVIS_VOICE_PROMPT = """You are JARVIS, a voice AI assistant.
-Voice mode rules:
-- Maximum 2 short sentences per response
-- No markdown, no lists, no bullet points
-- Natural conversational speech only
-- Be warm and direct
+JARVIS_VOICE_PROMPT = """You are JARVIS, a proactive personal AI assistant in voice mode.
 
+VOICE RULES — strictly follow these:
+- Maximum 2 short sentences per response
+- Never say markdown, bullets, or lists
+- Speak naturally like a smart friend
+- Use the user's name occasionally to feel personal
+- Be warm, direct, and confident
+
+USER CONTEXT:
 {user_context}
+
+IMPORTANT — you know this person well from the context above.
+When asked about their sister, people, home, work — answer from context first before calling any tool.
+Only call tools when you need live data (weather, traffic, places, exchange rates, web search).
 """
 
 
@@ -668,28 +675,125 @@ class JARVISAgent(Agent):
 
 
 async def get_user_context(user_id: str) -> str:
-    """Fetch user profile and world state for the system prompt."""
-    parts = []
+    """Build rich user context for voice agent system prompt."""
+    from datetime import datetime
+    import pytz
+
     db = get_supabase()
+    parts = []
+
+    # 1. User profile — name, home, work
     try:
         profile = db.table("users")\
-            .select("display_name, timezone")\
+            .select("display_name,home_lat,home_lng,home_address,work_lat,work_lng,work_address")\
             .eq("id", user_id)\
             .maybe_single()\
             .execute()
-        if profile.data and profile.data.get("display_name"):
-            parts.append(f"The user's name is {profile.data['display_name']}.")
-    except Exception:
-        pass
+
+        if profile.data:
+            name = profile.data.get("display_name", "")
+            if name:
+                parts.append(f"The user's name is {name}.")
+
+            home_addr = profile.data.get("home_address", "")
+            home_lat = profile.data.get("home_lat")
+            home_lng = profile.data.get("home_lng")
+            if home_lat and home_lng:
+                parts.append(
+                    f"Home: {home_addr} (coordinates: {home_lat}, {home_lng}). "
+                    f"Use these coords when asked for directions home."
+                )
+
+            work_addr = profile.data.get("work_address", "")
+            work_lat = profile.data.get("work_lat")
+            work_lng = profile.data.get("work_lng")
+            if work_lat and work_lng:
+                parts.append(
+                    f"Work: {work_addr} (coordinates: {work_lat}, {work_lng}). "
+                    f"Use these coords when asked for directions to work."
+                )
+    except Exception as e:
+        logger.warning(f"[voice] profile fetch error: {e}")
+
+    # 2. Current location and weather from world state
     try:
         ws = await cache_get(user_id)
         if ws:
-            city = ws.get("location", {}).get("city", "")
-            if city:
-                parts.append(f"They are currently in {city}, Nigeria.")
+            location = ws.get("location", {})
+            city = location.get("city", "")
+            district = location.get("district", "")
+            loc_str = f"{district}, {city}" if district else city
+            if loc_str.strip():
+                parts.append(f"Current location: {loc_str}, Nigeria.")
+
+            weather = ws.get("environment", {}).get("weather", {})
+            temp = weather.get("temp_c")
+            condition = weather.get("description", weather.get("condition", ""))
+            if temp:
+                parts.append(f"Current weather: {temp}°C, {condition}.")
+    except Exception as e:
+        logger.warning(f"[voice] world state fetch error: {e}")
+
+    # 3. Current time in Lagos
+    try:
+        lagos_tz = pytz.timezone("Africa/Lagos")
+        now = datetime.now(lagos_tz)
+        parts.append(
+            f"Current time: {now.strftime('%I:%M %p')} on "
+            f"{now.strftime('%A, %B %d, %Y')}."
+        )
     except Exception:
         pass
-    return " ".join(parts)
+
+    # 4. Active goals
+    try:
+        goals = db.table("goals")\
+            .select("title")\
+            .eq("user_id", user_id)\
+            .eq("status", "active")\
+            .execute()
+        if goals.data:
+            titles = [g["title"] for g in goals.data[:3]]
+            parts.append(f"Active goals: {', '.join(titles)}.")
+    except Exception as e:
+        logger.warning(f"[voice] goals fetch error: {e}")
+
+    # 5. People in network
+    try:
+        people = db.table("people")\
+            .select("name, relationship_type")\
+            .eq("user_id", user_id)\
+            .execute()
+        if people.data:
+            people_list = [
+                f"{p['name']} ({p['relationship_type']})"
+                for p in people.data[:5]
+            ]
+            parts.append(
+                f"People in network: {', '.join(people_list)}. "
+                f"Use recall_person to get details about any of them."
+            )
+    except Exception as e:
+        logger.warning(f"[voice] people fetch error: {e}")
+
+    # 6. Upcoming reminders today
+    try:
+        lagos_tz = pytz.timezone("Africa/Lagos")
+        today = datetime.now(lagos_tz).strftime("%Y-%m-%d")
+        reminders = db.table("relationship_events")\
+            .select("title, scheduled_at")\
+            .eq("user_id", user_id)\
+            .eq("nudge_sent", False)\
+            .gte("scheduled_at", today)\
+            .lte("scheduled_at", today + "T23:59:59")\
+            .execute()
+        if reminders.data:
+            r_list = [r["title"] for r in reminders.data[:3]]
+            parts.append(f"Reminders today: {', '.join(r_list)}.")
+    except Exception as e:
+        logger.warning(f"[voice] reminders fetch error: {e}")
+
+    return "\n".join(parts)
 
 
 async def entrypoint(ctx: JobContext):
