@@ -7,10 +7,19 @@ import { VoiceMode } from '@/components/VoiceMode'
 import { MapWidget } from '@/components/MapWidget'
 import { collectSensors } from '@/lib/sensors'
 import { supabase } from '@/lib/supabase'
+import { api } from '@/lib/api'
 import type { Nudge, WorldState, Message } from '@/types'
-import { Send, Mic, Bell } from 'lucide-react'
+import { Send, Mic, Bell, Plus, MessageSquare } from 'lucide-react'
 
 const JARVIS_URL = process.env.NEXT_PUBLIC_JARVIS_URL || 'http://localhost:8000'
+const THREAD_ID_KEY = 'jarvis_thread_id'
+
+interface ConversationSummary {
+  id: string
+  title: string | null
+  created_at: string
+  last_message_at: string
+}
 
 export default function HomePage() {
   const router = useRouter()
@@ -37,6 +46,9 @@ export default function HomePage() {
   const [currentTime, setCurrentTime] = useState<string>('')
   const [contextReady, setContextReady] = useState(false)
   const [userName, setUserName] = useState<string>('')
+  const [threadId, setThreadId] = useState<string | null>(null)
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const getToken = async (): Promise<string | null> => {
@@ -64,6 +76,17 @@ export default function HomePage() {
   }, [router])
 
   useEffect(() => {
+    // Registers the existing public/sw.js stub (currently a safe pass-
+    // through, no caching/offline behavior yet -- "Phase 2" per its own
+    // comment). Having ANY registered service worker is one of Chrome/
+    // Android's PWA installability criteria, so this turns "Add to Home
+    // Screen" into a real install rather than just a bookmark shortcut.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) { router.push('/login'); return }
       const ok = await checkOnboarding(session.access_token)
@@ -78,6 +101,60 @@ export default function HomePage() {
     })
     return () => subscription.unsubscribe()
   }, [router, checkOnboarding])
+
+  const loadConversationMessages = useCallback(async (id: string) => {
+    try {
+      const data = await api.conversations.messages(id)
+      if (data.messages?.length > 0) {
+        setMessages(data.messages.map((m: { role: string; content: string }) => ({
+          role: m.role, content: m.content,
+        })))
+      } else {
+        setMessages([])
+      }
+    } catch {
+      setMessages([])
+    }
+  }, [])
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const list = await api.conversations.list()
+      if (Array.isArray(list)) setConversations(list)
+    } catch {}
+  }, [])
+
+  // On first auth, resume the last thread (or start a fresh one) and
+  // restore its message history — this is what fixes "dies on refresh"
+  useEffect(() => {
+    if (!userToken || threadId) return
+    const stored = localStorage.getItem(THREAD_ID_KEY)
+    if (stored) {
+      setThreadId(stored)
+      loadConversationMessages(stored)
+    } else {
+      const id = crypto.randomUUID()
+      localStorage.setItem(THREAD_ID_KEY, id)
+      setThreadId(id)
+    }
+    refreshConversations()
+  }, [userToken, threadId, loadConversationMessages, refreshConversations])
+
+  const startNewConversation = useCallback(() => {
+    const id = crypto.randomUUID()
+    localStorage.setItem(THREAD_ID_KEY, id)
+    setThreadId(id)
+    setMessages([])
+    setSidebarOpen(false)
+    refreshConversations()
+  }, [refreshConversations])
+
+  const switchConversation = useCallback((id: string) => {
+    localStorage.setItem(THREAD_ID_KEY, id)
+    setThreadId(id)
+    loadConversationMessages(id)
+    setSidebarOpen(false)
+  }, [loadConversationMessages])
 
   useEffect(() => {
     if (!navigator.permissions) {
@@ -329,7 +406,7 @@ export default function HomePage() {
       const res = await fetch(`${JARVIS_URL}/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: allMessages }),
+        body: JSON.stringify({ messages: allMessages, thread_id: threadId }),
       })
 
       if (!res.ok || !res.body) throw new Error('Agent error')
@@ -381,12 +458,17 @@ export default function HomePage() {
           })
         }
       }
+      refreshConversations()
+      // Title generation runs fire-and-forget on the backend after the
+      // response — it's rarely ready by the time the stream ends, so a
+      // second refresh shortly after catches the generated title.
+      setTimeout(refreshConversations, 3000)
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again.' }])
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, userToken, messages, contextReady, refreshContext, handleTimerFromResponse, handleMapFromResponse])
+  }, [input, streaming, userToken, messages, contextReady, refreshContext, handleTimerFromResponse, handleMapFromResponse, threadId, refreshConversations])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -405,9 +487,23 @@ export default function HomePage() {
       {/* Header */}
       <header className="flex items-center justify-between px-3 py-2 border-b border-jarvis-border bg-jarvis-surface shrink-0">
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="p-1.5 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors text-jarvis-muted"
+            title="Conversations"
+          >
+            <MessageSquare size={16} />
+          </button>
           <span className="text-base font-semibold tracking-tight">JARVIS</span>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-jarvis-muted">
+          <button
+            onClick={startNewConversation}
+            className="px-1.5 py-1 rounded bg-jarvis-border hover:bg-jarvis-accent/20 transition-colors flex items-center gap-1"
+            title="New chat"
+          >
+            <Plus size={14} /> New
+          </button>
           <button
             onClick={syncLocation}
             className="px-1.5 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 transition-colors"
@@ -527,6 +623,7 @@ export default function HomePage() {
           <div className="flex flex-col items-center justify-center h-full gap-6 px-4">
             <p className="text-jarvis-muted text-sm">Voice mode active</p>
             <VoiceMode
+              conversationId={threadId}
               onTranscript={(text, role) => {
                 setMessages(prev => [...prev, { role, content: text }])
               }}
@@ -628,6 +725,38 @@ export default function HomePage() {
           </>
         )}
       </div>
+
+      {/* Conversation sidebar — minimal: titles + timestamps, clickable */}
+      {sidebarOpen && userToken && (
+        <div className="fixed inset-0 z-50 md:relative md:inset-auto md:w-72">
+          <div className="absolute inset-0 bg-black/60 md:hidden" onClick={() => setSidebarOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 md:relative md:w-full bg-jarvis-surface border-r border-jarvis-border flex flex-col">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-jarvis-border shrink-0">
+              <span className="text-sm font-medium">Conversations</span>
+              <button onClick={() => setSidebarOpen(false)} className="text-jarvis-muted text-xs md:hidden">Close</button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {conversations.length === 0 && (
+                <p className="text-xs text-jarvis-muted px-3 py-4">No conversations yet.</p>
+              )}
+              {conversations.map(c => (
+                <button
+                  key={c.id}
+                  onClick={() => switchConversation(c.id)}
+                  className={`w-full text-left px-3 py-2 border-b border-jarvis-border/50 hover:bg-jarvis-accent/10 transition-colors ${
+                    c.id === threadId ? 'bg-jarvis-accent/15' : ''
+                  }`}
+                >
+                  <div className="text-sm truncate">{c.title || 'New conversation'}</div>
+                  <div className="text-xs text-jarvis-muted">
+                    {new Date(c.last_message_at).toLocaleString()}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Nudge panel */}
       {panelOpen && userToken && (

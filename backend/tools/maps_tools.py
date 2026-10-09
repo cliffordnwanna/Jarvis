@@ -3,9 +3,11 @@ JARVIS Maps Tools — powered by TomTom APIs (no billing required, real traffic 
 """
 import os
 import math
+from typing import Annotated
 import httpx
 from datetime import date as date_type
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 from backend.db.cache import cache_get
 from backend.db.postgres import get_supabase
 
@@ -27,7 +29,10 @@ async def _check_and_increment_tomtom(user_id: str) -> bool:
             .eq("date", today) \
             .maybe_single() \
             .execute()
-        current = res.data["tomtom_calls"] if res.data else 0
+        # maybe_single() returns None (not a response object with .data=None)
+        # when zero rows match -- confirmed via direct testing against this
+        # Supabase client version.
+        current = res.data["tomtom_calls"] if res and res.data else 0
         if current >= TOMTOM_DAILY_LIMIT:
             print(f"[maps] Rate limit: {user_id} at {current}/{TOMTOM_DAILY_LIMIT} today")
             return False
@@ -60,7 +65,7 @@ async def _get_user_location(user_id: str):
 
 @tool
 async def find_nearby_places(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     query: str,
     radius: int = 3000,
 ) -> list:
@@ -164,7 +169,7 @@ async def find_nearby_places(
 
 @tool
 async def get_route_and_traffic(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     destination_lat: float,
     destination_lng: float,
     destination_label: str = "destination",
@@ -280,7 +285,7 @@ async def get_route_and_traffic(
 
 @tool
 async def check_traffic_to_saved_location(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     location_type: str = "work",
 ) -> dict:
     """
@@ -343,7 +348,7 @@ async def check_traffic_to_saved_location(
 
 @tool
 async def search_place_by_name(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     place_name: str,
 ) -> dict:
     """

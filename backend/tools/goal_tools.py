@@ -1,10 +1,12 @@
+from typing import Annotated
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 from backend.db.postgres import get_supabase
 from datetime import datetime, timezone
 
 
 @tool
-async def get_goals(user_id: str) -> list:
+async def get_goals(user_id: Annotated[str, InjectedState("user_id")]) -> list:
     """
     Retrieve all active goals for the user from the database.
 
@@ -25,7 +27,7 @@ async def get_goals(user_id: str) -> list:
 
 @tool
 async def manage_goal(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     action: str,
     title: str = None,
     goal_id: str = None,
@@ -51,11 +53,15 @@ async def manage_goal(
         }).execute()
         return {"status": "created", "goal": res.data[0] if res.data else {}}
     elif action == "complete" and goal_id:
-        db.table("goals").update({"status": "completed"}).eq("id", goal_id).execute()
+        # Scoped by user_id too, not just goal_id -- a goal_id alone doesn't
+        # prove ownership (confirmed during the UUID/isolation audit that
+        # this file previously relied on id alone, same pattern fixed in
+        # update_person_tool).
+        db.table("goals").update({"status": "completed"}).eq("id", goal_id).eq("user_id", user_id).execute()
         return {"status": "completed"}
     elif action == "touch" and goal_id:
         db.table("goals").update({
             "last_touched_at": datetime.now(timezone.utc).isoformat()
-        }).eq("id", goal_id).execute()
+        }).eq("id", goal_id).eq("user_id", user_id).execute()
         return {"status": "touched"}
     return {"error": "Invalid action or missing parameters. Actions: create, complete, touch."}

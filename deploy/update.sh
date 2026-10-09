@@ -18,7 +18,10 @@ cd ..
 
 pm2 restart jarvis-backend
 pm2 restart jarvis-frontend
+pm2 restart jarvis-voice 2>/dev/null || echo "jarvis-voice not running yet -- run deploy/start.sh once to add it"
 
 echo ""
 echo "=== Update complete ==="
 pm2 status
+echo ""
+echo "Check voice worker: pm2 logs jarvis-voice --lines 20 --nostream"

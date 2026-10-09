@@ -465,7 +465,8 @@ async def fetch_nearby(lat: float, lng: float, radius_m: int = 1000) -> dict:
         try:
             resp = await client.post(
                 "https://overpass-api.de/api/interpreter",
-                data={"data": query}
+                data={"data": query},
+                headers=NOMINATIM_HEADERS,
             )
             for el in resp.json().get("elements", []):
                 tags = el.get("tags", {})

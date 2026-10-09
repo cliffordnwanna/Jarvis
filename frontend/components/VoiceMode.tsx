@@ -6,24 +6,32 @@ import { supabase } from '@/lib/supabase'
 
 interface VoiceModeProps {
   onTranscript?: (text: string, role: 'user' | 'assistant') => void
+  // The active text-chat conversation id (Phase 0's jarvis_thread_id).
+  // Passed through so voice persists turns to the SAME conversation
+  // instead of a separate one -- voice is another interface to the same
+  // JARVIS, not a disconnected system.
+  conversationId?: string | null
 }
 
 type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error'
 
 const JARVIS_URL = process.env.NEXT_PUBLIC_JARVIS_URL || 'http://localhost:8000'
 
-async function getRoomToken(): Promise<{ token: string; room: string; url: string } | null> {
+async function getRoomToken(
+  conversationId?: string | null
+): Promise<{ token: string; room: string; url: string; conversation_id: string } | null> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) return null
 
-  const res = await fetch(`${JARVIS_URL}/voice/token`, {
+  const params = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''
+  const res = await fetch(`${JARVIS_URL}/voice/token${params}`, {
     headers: { Authorization: `Bearer ${session.access_token}` },
   })
   if (!res.ok) return null
   return res.json()
 }
 
-export function VoiceMode({ onTranscript }: VoiceModeProps) {
+export function VoiceMode({ onTranscript, conversationId }: VoiceModeProps) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const roomRef = useRef<any>(null)
@@ -35,7 +43,7 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
     try {
       const { Room, RoomEvent, Track } = await import('livekit-client')
 
-      const tokenData = await getRoomToken()
+      const tokenData = await getRoomToken(conversationId)
       if (!tokenData) throw new Error('Failed to get room token')
 
       const room = new Room({
@@ -74,7 +82,7 @@ export function VoiceMode({ onTranscript }: VoiceModeProps) {
       setError(err.message || 'Connection failed')
       setStatus('error')
     }
-  }, [onTranscript])
+  }, [onTranscript, conversationId])
 
   const disconnect = useCallback(async () => {
     if (roomRef.current) {

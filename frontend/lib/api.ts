@@ -123,6 +123,31 @@ export const api = {
       return res.json()
     },
   },
+
+  conversations: {
+    create: async (id?: string) => {
+      const res = await authedFetch('/conversations', {
+        method: 'POST',
+        body: JSON.stringify(id ? { id } : {}),
+      })
+      return res.json()
+    },
+    list: async () => {
+      const res = await authedFetch('/conversations')
+      return res.json()
+    },
+    messages: async (id: string) => {
+      const res = await authedFetch(`/conversations/${id}/messages`)
+      return res.json()
+    },
+    rename: async (id: string, title: string) => {
+      const res = await authedFetch(`/conversations/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      })
+      return res.json()
+    },
+  },
 }
 
 export async function fetchNudges(token: string) {

@@ -6,15 +6,30 @@ python-dotenv>=1.0.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 langgraph>=1.0.0
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.2.0
 langchain>=1.0.0
 langchain-core>=1.3.1
 langchain-openai>=0.3.0
 langchain-groq>=0.3.0
 supabase>=2.7.0
 openai>=1.40.0
+tiktoken>=0.7.0
+mem0ai>=0.1.0
 pytz>=2024.1
 apscheduler==3.10.4
 tavily-python>=0.3.0
-livekit-agents>=0.12.0
-livekit-plugins-openai>=0.10.0
-livekit-plugins-silero>=0.7.0
+
+# Voice (Phase 6) -- LiveKit Agents SDK, not Pipecat. A Pipecat-based
+# rewrite was attempted and reverted: LiveKit Agents already provides
+# automatic worker dispatch (cli.run_app/WorkerOptions), VAD, and
+# interruption handling, and Pipecat's LiveKit integration in the
+# version evaluated had no automatic dispatch equivalent -- would have
+# required spawning a worker process per session from FastAPI, avoided.
+# Versions pinned to what was actually installed and verified against
+# (inspect.signature / source reads) while writing backend/livekit_agent.py.
+livekit-api==1.2.1
+livekit-agents==1.8.5
+livekit-plugins-openai==1.8.5
+livekit-plugins-silero==1.8.5
+livekit-plugins-deepgram==1.8.5

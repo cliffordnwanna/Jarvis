@@ -2,10 +2,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import context, nudges, people, goals, memory, llm, briefing, voice, reminders, users
+from backend.routers import context, nudges, people, goals, memory, llm, briefing, voice, reminders, users, conversations
 from backend.scheduler import start_scheduler
 from backend.auth import get_current_user
 from backend.db.cache import cache_get
@@ -20,6 +20,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
         "https://89.167.93.25.sslip.io",
         "https://jarvis-eta-self.vercel.app",
     ],
@@ -41,18 +43,42 @@ app.include_router(briefing.router, prefix="/briefing", tags=["briefing"])
 app.include_router(voice.router, prefix="/voice", tags=["voice"])
 app.include_router(reminders.router, prefix="/reminders", tags=["reminders"])
 app.include_router(users.router, prefix="/users", tags=["users"])
+app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
+
+
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from backend.agent import build_graph
+from backend.db.checkpointer import get_checkpointer, close_checkpointer
+from backend.context.builder import build_context, _count_tokens
+from backend.utils.titles import generate_title
+from backend.memory.mem0_client import remember as mem0_remember, get_all_authoritative as mem0_get_all, delete_all as mem0_delete_all
+from openai import AsyncOpenAI
+import asyncio
+import json
 
 
 @app.on_event("startup")
 async def startup_event():
+    # Fails loudly at boot instead of as a confusing failed chat request
+    # later -- ChatOpenAI/AsyncOpenAI don't validate the key until the
+    # first real API call, so a missing key previously surfaced only when
+    # a user's first message silently errored.
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is not set -- the agent cannot start without it.")
+
     start_scheduler()
     print("✓ Background scheduler started")
 
-from fastapi import Request
-from fastapi.responses import StreamingResponse
-from backend.agent import build_graph, BASE_SYSTEM_PROMPT
-from openai import AsyncOpenAI
-import json
+    checkpointer = await get_checkpointer()
+    app.state.graph = build_graph(checkpointer=checkpointer)
+    print("✓ Agent graph built once at startup (PostgresSaver checkpointer)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await close_checkpointer()
+    print("✓ Checkpointer connection pool closed")
 
 _openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -114,10 +140,6 @@ async def prepare_messages(messages: list, user_id: str = None) -> list:
         return recent
 
 
-def get_graph(system_prompt: str = None):
-    return build_graph(system_prompt or BASE_SYSTEM_PROMPT)
-
-
 # Module-level cache — one DB hit per user per backend restart
 _user_profile_cache: dict = {}
 
@@ -145,13 +167,86 @@ async def get_user_profile(user_id: str) -> dict:
         return {}
 
 
+async def persist_message(conversation_id: str, user_id: str, role: str, content: str) -> None:
+    """Fire-and-forget: write one turn to the messages table. Non-fatal on failure."""
+    if not content or not content.strip():
+        return
+    try:
+        from backend.db.postgres import get_supabase
+        db = get_supabase()
+        db.table("messages").insert({
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content,
+        }).execute()
+    except Exception as e:
+        print(f"[messages] persist error (non-fatal): {e}")
+
+
+async def get_or_create_conversation(conversation_id: str, user_id: str) -> bool:
+    """
+    Ensures a conversations row exists for this id. The frontend generates
+    the id client-side (crypto.randomUUID()) and this call makes it durable
+    on first use — so the same id works as both the LangGraph thread_id and
+    the conversations.id foreign key messages point at.
+
+    Returns True if this call created the row (i.e. this is the first
+    message in the conversation) — the signal used to trigger title
+    generation, which is more reliable than counting messages afterward.
+    """
+    from backend.db.postgres import get_supabase
+    db = get_supabase()
+    try:
+        existing = db.table("conversations").select("id").eq("id", conversation_id).maybe_single().execute()
+        if existing and existing.data:
+            return False
+    except Exception as e:
+        print(f"[conversations] lookup error: {e}")
+
+    try:
+        db.table("conversations").insert({
+            "id": conversation_id,
+            "user_id": user_id,
+            "title": "New conversation",
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"[conversations] create error (non-fatal): {e}")
+        return False
+
+
+async def _update_title_async(conversation_id: str, first_message: str) -> None:
+    """Fire-and-forget: generate and save a real title. Non-fatal on failure."""
+    try:
+        from backend.db.postgres import get_supabase
+        title = await generate_title(first_message)
+        db = get_supabase()
+        db.table("conversations").update({"title": title}).eq("id", conversation_id).execute()
+        print(f"[title] set '{title}' for conversation {conversation_id}")
+    except Exception as e:
+        print(f"[title] update failed (non-fatal): {e}")
+
+
 @app.post("/agent")
-async def agent_endpoint(request: Request, user_id: str = Depends(get_current_user)):
+async def agent_endpoint(request: Request, background_tasks: BackgroundTasks, user_id: str = Depends(get_current_user)):
     body = await request.json()
     raw_messages = body.get("messages", [])
-    messages = await prepare_messages(raw_messages, user_id=user_id)
+    thread_id = body.get("thread_id") or f"default-{user_id}"
+    is_first_message = await get_or_create_conversation(thread_id, user_id)
 
-    print(f"[agent] called by user={user_id}, last_message={messages[-1] if messages else 'none'}")
+    # The checkpointer owns conversation history for this thread — only the
+    # newest user message needs to go to the graph; LangGraph replays the
+    # rest from Postgres via thread_id. prepare_messages()'s summarization
+    # logic operated on a full client-sent array, which no longer applies
+    # here; it's left in place but unused by this endpoint.
+    user_turn = raw_messages[-1] if raw_messages else None
+    messages = [user_turn] if user_turn else []
+
+    if is_first_message and user_turn and user_turn.get("content"):
+        background_tasks.add_task(_update_title_async, thread_id, user_turn["content"])
+
+    print(f"[agent] called by user={user_id}, thread={thread_id}, last_message={messages[-1] if messages else 'none'}")
 
     from datetime import datetime, timezone, timedelta
     from zoneinfo import ZoneInfo
@@ -246,9 +341,10 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
     profile = await get_user_profile(user_id)
     user_name = profile.get("display_name") or ""
 
-    # On a fresh session (≤2 messages), load the last saved conversation summary
+    # On a fresh session (no checkpointed history yet for this thread), load
+    # the last saved conversation summary as a bridge for continuity
     conversation_context = ""
-    if len(messages) <= 2:
+    if len(messages) <= 1:
         try:
             from backend.db.postgres import get_supabase
             db = get_supabase()
@@ -269,6 +365,10 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
         except Exception as e:
             print(f"[agent] Failed to load conversation summary: {e}")
 
+    # Pre-formatted profile text (name + home/work route-tool hints) — kept
+    # as rich text from the existing logic rather than build_context()'s
+    # simpler internal formatter, so proactive traffic/weather tool-call
+    # guidance isn't silently lost.
     name_line = f"USER'S NAME: {user_name} — address them by this name.\n" if user_name else ""
     home_lat  = profile.get("home_lat")
     home_lng  = profile.get("home_lng")
@@ -286,22 +386,30 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
         f"→ For directions to work: get_route_and_traffic(user_id, dest_lat={work_lat}, dest_lng={work_lng}, destination_label='Work')\n"
         if work_lat and work_lng else ""
     )
-    system_prompt = (
-        f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
-        + name_line
-        + home_line
-        + work_line
-        + conversation_context
-        + world_context
-        + "\n"
-        + BASE_SYSTEM_PROMPT
+    profile_text = (f"USER ID (use this exact UUID for ALL tool calls that need user_id): {user_id}\n"
+                     + name_line + home_line + work_line) or None
+    world_state_text = (conversation_context + world_context) or None
+
+    user_turn_content = user_turn.get("content", "") if user_turn else ""
+
+    from backend.db.postgres import get_supabase
+    context_result = await build_context(
+        user_id=user_id,
+        conversation_id=thread_id,
+        current_message=user_turn_content,
+        world_state=world_state,
+        supabase=get_supabase(),
+        profile_text=profile_text,
+        world_state_text=world_state_text,
     )
+    system_prompt = context_result.text
 
     async def stream():
-        graph = get_graph(system_prompt)
+        graph = app.state.graph
+        assistant_content = ""
         async for chunk in graph.astream(
-            {"messages": messages},
-            config={"configurable": {"user_id": user_id}},
+            {"messages": messages, "system_prompt": system_prompt, "user_id": user_id},
+            config={"configurable": {"thread_id": thread_id, "user_id": user_id}},
         ):
             print(f"[agent] chunk keys: {list(chunk.keys())}")
             for node_key in chunk:
@@ -319,8 +427,35 @@ async def agent_endpoint(request: Request, user_id: str = Depends(get_current_us
                     if stripped.startswith('{"error"') or stripped.startswith('[{'):
                         continue
                     print(f"[agent] yielding: {content[:80]}")
+                    assistant_content += content
                     yield f"data: {json.dumps({'content': content})}\n\n"
         yield "data: [DONE]\n\n"
+
+        print(f"[agent] post-stream: persisting + extracting memory for thread={thread_id}")
+        await persist_message(thread_id, user_id, "user", user_turn_content)
+        await persist_message(thread_id, user_id, "assistant", assistant_content)
+
+        # Mem0 extraction — only after the assistant message is fully
+        # assembled (post-stream), never mid-stream. Awaited directly here
+        # rather than via asyncio.create_task(): by this point the client
+        # has already received the full "data: [DONE]" stream, so this adds
+        # no perceived latency, and — critically — a bare create_task()
+        # scheduled this late has no guaranteed lifetime once the generator
+        # (and the StreamingResponse closing it) finishes; it can be
+        # silently cancelled before it ever runs. Confirmed this was
+        # happening: a direct conflict-resolution test (telling JARVIS a
+        # new fact that should supersede an old one) showed the new fact
+        # never reached Mem0 at all, with no error logged — the task was
+        # being dropped, not failing loudly. Awaiting it here is what
+        # actually guarantees execution.
+        if user_turn_content and assistant_content:
+            await mem0_remember([
+                {"role": "user", "content": user_turn_content},
+                {"role": "assistant", "content": assistant_content},
+            ], user_id=user_id)
+            print(f"[agent] post-stream: mem0_remember() returned for thread={thread_id}")
+        else:
+            print(f"[agent] post-stream: skipped mem0_remember (empty user_turn_content or assistant_content)")
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -343,3 +478,46 @@ async def get_world_state(user_id: str = Depends(get_current_user)):
     if not state:
         return {"status": "empty", "message": "No world state yet. POST to /context/update first."}
     return state
+
+
+# TEMPORARY — debug/dev endpoints. Remove before Phase 3.
+@app.get("/debug/context")
+async def debug_context(user_id: str = Depends(get_current_user)):
+    from backend.db.postgres import get_supabase
+    result = await build_context(
+        user_id=user_id,
+        conversation_id="debug-test",
+        current_message="test message",
+        world_state=None,
+        supabase=get_supabase(),
+    )
+    return {
+        "token_count": result.total_tokens,
+        "layers": [
+            {"name": l.name, "included": l.included,
+             "tokens": l.token_count, "reason": l.reason}
+            for l in result.layers
+        ],
+        "text_preview": result.text[:500],
+    }
+
+
+@app.get("/debug/memories")
+async def debug_memories(user_id: str = Depends(get_current_user)):
+    """
+    List all stored Mem0 memories via direct Postgres — development only.
+    Uses direct SQL, not Mem0's own get_all(): confirmed by direct testing
+    that get_all() underreports real row counts in this config.
+    """
+    memories = await mem0_get_all(user_id)
+    return {
+        "count": len(memories),
+        "memories": memories,
+    }
+
+
+@app.delete("/debug/memories")
+async def clear_all_memories(user_id: str = Depends(get_current_user)):
+    """Wipe all Mem0 memories — use to start fresh."""
+    deleted = await mem0_delete_all(user_id)
+    return {"deleted": deleted}

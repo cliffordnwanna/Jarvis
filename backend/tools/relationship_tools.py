@@ -1,8 +1,10 @@
 import os
 import re
 import json
+from typing import Annotated
 from openai import AsyncOpenAI
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 from backend.db.postgres import get_supabase
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -230,7 +232,7 @@ async def hybrid_search_notes(query: str, user_id: str, person_id: str = None) -
 
 @tool
 async def add_person(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     name: str,
     relationship_type: str = "friend",
     notes: str = None,
@@ -255,6 +257,15 @@ async def add_person(
     """
     db = get_supabase()
     try:
+        existing = db.table("people").select("id, name").eq("user_id", user_id).ilike("name", name).limit(1).execute()
+        if existing.data:
+            return {
+                "status": "already_exists",
+                "person_id": existing.data[0]["id"],
+                "name": existing.data[0]["name"],
+                "detail": f"{existing.data[0]['name']} is already saved. Use add_note_for_person to add new details instead.",
+            }
+
         person_data = {
             "user_id": user_id,
             "name": name,
@@ -297,7 +308,7 @@ async def add_person(
 
 @tool
 async def add_note_for_person(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     person_name: str,
     note: str,
 ) -> dict:
@@ -341,7 +352,56 @@ async def add_note_for_person(
 
 
 @tool
-async def hybrid_search_notes_tool(query: str, user_id: str, person_id: str = None) -> list[dict]:
+async def update_person_tool(
+    user_id: Annotated[str, InjectedState("user_id")],
+    person_name: str,
+    new_name: str = None,
+    relationship_type: str = None,
+) -> dict:
+    """
+    Update an EXISTING person's name or relationship type in place.
+
+    CALL THIS when the user asks to rename or correct a person already saved:
+    - "Rename Sumekelev to Adrenaline"
+    - "Actually his name is X, not Y"
+    - "Change Cherry's relationship to colleague"
+
+    Do NOT use add_person for this -- add_person creates a new person and
+    would leave a duplicate behind. This updates the existing row instead.
+
+    person_name: the person's CURRENT name as stored (must match)
+    new_name: the corrected/new name, if renaming
+    relationship_type: the corrected relationship type, if changing
+    """
+    db = get_supabase()
+    try:
+        res = db.table("people").select("id, name").eq("user_id", user_id).ilike("name", f"%{person_name}%").limit(1).execute()
+        if not res.data:
+            return {"status": "error", "detail": f"No person named '{person_name}' found."}
+
+        person = res.data[0]
+        updates = {}
+        if new_name:
+            updates["name"] = new_name
+        if relationship_type:
+            updates["relationship_type"] = relationship_type
+        if not updates:
+            return {"status": "error", "detail": "No fields to update were provided."}
+
+        # Scoped by user_id too, not just id -- defense in depth matching
+        # every other write in this file, confirmed during the UUID/
+        # isolation audit (person["id"] only ever comes from the user-
+        # scoped SELECT above, so this wasn't exploitable, but it was the
+        # one write here that didn't match the rest of the file's pattern).
+        db.table("people").update(updates).eq("id", person["id"]).eq("user_id", user_id).execute()
+        return {"status": "updated", "person_id": person["id"], "old_name": person["name"], "updates": updates}
+    except Exception as e:
+        print(f"[update_person_tool] error: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@tool
+async def hybrid_search_notes_tool(query: str, user_id: Annotated[str, InjectedState("user_id")], person_id: str = None) -> list[dict]:
     """
     Search relationship memory for information about a person or topic.
 
@@ -366,7 +426,7 @@ async def hybrid_search_notes_tool(query: str, user_id: str, person_id: str = No
 
 @tool
 async def create_reminder(
-    user_id: str,
+    user_id: Annotated[str, InjectedState("user_id")],
     title: str,
     scheduled_at: str,
     person_name: str = None,

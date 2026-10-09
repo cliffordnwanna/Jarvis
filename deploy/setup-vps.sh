@@ -68,9 +68,19 @@ apt-get update && apt-get install -y caddy
 systemctl enable caddy
 echo "Caddy installed."
 
-# --- PM2 ---
+# --- PM2 + LOG ROTATION ---
 npm install -g pm2
 echo "PM2 installed."
+
+# pm2-logrotate caps each process's log file size and keeps a bounded
+# number of rotated copies, so jarvis-backend/jarvis-frontend/jarvis-voice
+# logs can't silently fill the disk over weeks of uptime. Run as the
+# deploy user (not root) so it manages deploy's own PM2 daemon.
+sudo -u deploy pm2 install pm2-logrotate
+sudo -u deploy pm2 set pm2-logrotate:max_size 10M
+sudo -u deploy pm2 set pm2-logrotate:retain 7
+sudo -u deploy pm2 set pm2-logrotate:compress true
+echo "pm2-logrotate installed (10MB max per log, 7 rotations kept, compressed)."
 
 # --- APP DIRECTORY ---
 mkdir -p /home/deploy/apps
