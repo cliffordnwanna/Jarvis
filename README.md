@@ -1,339 +1,133 @@
 # JARVIS
 
-> Your Personal AI Operating System
+JARVIS is a personal assistant with streaming text chat, LiveKit voice sessions, persistent conversations, user context, structured and semantic memory, and tools for people, goals, reminders, maps, and web search. The web client is a Next.js PWA, the API and text agent run in FastAPI and LangGraph, and Supabase PostgreSQL stores application and memory data. **Live demo:** [jarvis-eta-self.vercel.app](https://jarvis-eta-self.vercel.app)
 
-[![Next.js](https://img.shields.io/badge/Next.js-14-black)](https://nextjs.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com/)
-[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
-[![Supabase](https://img.shields.io/badge/Supabase-Postgres-green)](https://supabase.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Agent-purple)](https://www.langchain.com/langgraph)
-[![LiveKit](https://img.shields.io/badge/Voice-LiveKit-orange)](https://livekit.io/)
+## Architecture
 
-> An AI operating system designed to understand your world, not just your prompts.
-
-JARVIS is an experimental personal AI platform that combines persistent memory, real-time world awareness, voice interaction, relationship intelligence and autonomous reasoning into a single system.
-
-Unlike traditional AI assistants that wait for instructions, JARVIS continuously maintains context about the user’s environment, remembers what matters, and proactively helps with planning, organization and decision-making.
-
-**Live:** https://89.167.93.25.sslip.io
-
-## Why I Built JARVIS
-
-Modern AI assistants are remarkably capable, yet they remain fundamentally reactive. They wait for users to ask questions before providing assistance, often without awareness of the user’s location, current environment, relationships, goals, schedule or changing circumstances.
-
-I wanted to explore a different approach.
-
-JARVIS was built to answer one question:
-
-> What if an AI assistant continuously understood your world and helped before you even asked?
-
-Instead of relying solely on conversation history, JARVIS combines structured memory, environmental awareness and intelligent reasoning to deliver assistance that is timely, contextual and genuinely personal.
-
-## Core Design Principles
-
-### Context First
-
-Recommendations improve dramatically when AI understands the user’s current environment. Every interaction incorporates relevant context such as current location, weather, local time, traffic conditions, active goals and personal relationships.
-
-### Persistent Memory
-
-Conversations should not disappear. JARVIS maintains structured long-term memory that belongs entirely to the user. Memories remain searchable, editable and extensible rather than being hidden inside opaque chat history.
-
-### Proactive Intelligence
-
-Rather than waiting for prompts, JARVIS continuously identifies opportunities to help. Examples include reminder nudges, birthday notifications, follow-up suggestions, daily planning and goal tracking.
-
-### Privacy by Design
-
-User memories remain under user control. The architecture was intentionally designed around a dedicated database rather than opaque conversational memory, making behaviour easier to inspect, debug and extend.
-
-### Modular Architecture
-
-Every major capability is independently replaceable. Large language models, search providers, memory systems, voice services and mapping providers can evolve without redesigning the entire platform.
-
-## System Architecture
-
-```text
-                     User
-                       │
-       ┌───────────────┼────────────────┐
-       │               │                │
-    Web Chat        Voice Mode      Mobile PWA
-       │               │
-       └────── Next.js Frontend ───────┘
-                     │
-                FastAPI Backend
-                     │
-      ┌──────────────┼──────────────┐
-      │              │              │
-  LangGraph      Memory Layer    Tool Layer
-      │              │              │
-      │          Supabase       Tavily Search
-      │          pgvector       TomTom Maps
-      │          PostgreSQL     Weather APIs
-      │
-   OpenAI Models
+```mermaid
+flowchart TD
+    User[User] --> PWA[Next.js PWA]
+    PWA -->|JWT and chat requests| API[FastAPI backend]
+    API --> Context[Token-budgeted context builder]
+    Context --> Agent[LangGraph ReAct agent]
+    Agent --> Checkpointer[PostgresSaver checkpointer]
+    Checkpointer --> Supabase[(Supabase PostgreSQL)]
+    API --> Supabase
+    Agent --> Tools[Shared tool layer]
+    Tools --> Supabase
+    Tools --> Providers[TomTom and Tavily APIs]
+    Context --> Mem0[Mem0 semantic recall]
+    Mem0 --> Vectors[pgvector]
+    Vectors --> Supabase
+    Context --> Index[Structured memory_files index]
+    Index --> Supabase
+    Agent --> RelationshipNotes[relationship_notes search]
+    RelationshipNotes --> Supabase
+    PWA -->|voice token| LiveKit[LiveKit session]
+    LiveKit --> VoiceAgent[LiveKit voice agent]
+    VoiceAgent -->|same tool objects, adapted for voice| Tools
+    VoiceAgent -->|Deepgram STT| Deepgram[Deepgram]
+    VoiceAgent -->|OpenAI LLM and TTS| OpenAI[OpenAI]
+    VoiceAgent --> Supabase
 ```
 
-### Architecture Notes
+Supabase Auth issues JWTs validated by the backend. The authenticated user ID is passed into agent state and used for user-scoped operations. The backend uses Supabase PostgreSQL for application records, memory data, and the LangGraph checkpoint store. There is no Redis dependency. The world-state cache is stored in Supabase. APScheduler runs background reminder and relationship jobs.
 
-- `user_id` always comes from validated JWT, never from request data.
-- World state is cached and reused to reduce latency.
-- No Redis is used; state is stored in Supabase.
-- APScheduler powers proactive reminders and scheduled events.
-- Voice and text share the same reasoning layer.
-- The frontend renders structured tool outputs through a sentinel-based pattern.
-- Rate limiting is applied at the API layer.
+## Agent Design
 
-## Key Capabilities
+The text agent is a LangGraph ReAct graph. Each conversation uses a `thread_id`; the PostgresSaver checkpointer stores graph state so messages can resume after a browser refresh or backend restart. The client sends the latest user turn, and LangGraph reloads prior messages for that thread.
 
-### AI Conversation
+The context builder assembles a default 6,000-token budget in priority order:
 
-- Streaming conversations
-- LangGraph reasoning agent
-- Tool calling
-- Context injection
+1. Base agent instructions, always included.
+2. User profile.
+3. World state, including local time, location, and available weather context.
+4. Active goals.
+5. Mem0 semantic recall and the structured memory-file index.
+6. Conversation summary, when available. The builder's dedicated `conversation_summaries` lookup currently has no backing table, so this layer is empty. The API separately reads a saved summary from `conversations` for a new thread when available.
 
-### Persistent Memory
+Recent messages are restored from the checkpoint and are not another context-builder layer. Optional lower-priority layers can be omitted when the token budget is exceeded.
 
-- Long-term memory
-- Relationship management
-- Goal tracking
-- Reminder storage
-- Vector search
+Memory selection is not handled by a fixed keyword router. The context includes semantic results and a compact index of structured files; the agent decides whether to call a memory-file tool to read the relevant file. Relationship questions use the relationship-note search tool.
 
-### Voice Assistant
+Text and voice use the same base instructions and underlying tool objects. The voice adapter wraps those tools for the LiveKit SDK. Their orchestration differs: text runs through LangGraph, while voice runs in a LiveKit AgentSession. Voice uses Deepgram for speech recognition and OpenAI for language generation and speech output.
 
-- LiveKit voice sessions
-- Whisper speech recognition
-- Natural speech synthesis
-- Shared reasoning engine
+## Memory System
 
-### World Awareness
+- **Authoritative application data:** Supabase tables hold user, people, relationship-note, goal, reminder, conversation, and message records. Person-specific facts belong in `relationship_notes`.
+- **Authoritative structured personal state:** `memory_files` stores durable categories such as identity, employment, location, projects, goals, and preferences. The agent reads files from an injected index. Updates preserve earlier values in the file history.
+- **Derived and supporting memory:** Mem0 extracts and retrieves semantic memories backed by pgvector. It is not authoritative for changing current-state facts; Mem0 writes are currently add-only, so old and new values can coexist.
+- **Conversation state:** LangGraph checkpoints support resuming a thread. Conversation and message records are also stored in Supabase.
 
-JARVIS continuously enriches conversations using:
+An automatic memory-supersession layer was tried because Mem0's write path is add-only. In testing, the LLM-based deletion logic removed ten unrelated, still-valid memories. The deleted data was restored, and the lifecycle call was disabled. The module remains in the repository, but it is not part of the active memory-write path. This avoids destructive updates; it does not resolve conflicting Mem0 facts.
 
-- Current location
-- Weather
-- Local time
-- Traffic
-- Nearby places
-- Route planning
+## Reliability and Testing
 
-### Relationship Intelligence
+The repository currently contains no automated test files, and the frontend package has no test script. No automated test pass count is available because there is no configured suite to run.
 
-Unlike traditional assistants, JARVIS remembers people. It stores relationships, important dates, notes, follow-ups and birthdays, allowing conversations to become increasingly personal over time.
+Known issues recorded in the code and project docs:
 
-### Proactive Assistance
+- Google Calendar fetching is a stub and returns no calendar events.
+- Mem0 supersession is disabled after incorrect deletions; conflicting facts may remain together.
+- The context builder's `conversation_summaries` table lookup is not backed by a migration. The API has a separate summary path using the `conversations` table.
+- Voice, web search, and maps require provider credentials; those integrations are not available when their credentials are absent.
 
-Rather than simply answering questions, JARVIS actively assists by generating smart reminders, daily nudges, goal reviews, birthday alerts and follow-up suggestions.
+## Tech Stack
 
-## Technology Stack
-
-### Frontend
-
-- Next.js 14
-- React
-- TypeScript
-- Tailwind CSS
-- PWA
-
-### Backend
-
-- FastAPI
-- Python 3.12
-- LangGraph
-- OpenAI models
-
-### Voice
-
-- LiveKit
-- Whisper
-- OpenAI TTS
-
-### Database and Auth
-
-- Supabase PostgreSQL
-- pgvector
-- Supabase Auth
-- JWT
-- Google OAuth
-
-### Maps and Search
-
-- TomTom APIs
-- Tavily
-
-### Deployment
-
-- PM2
-- Caddy
-- Ubuntu VPS
-- No Docker
-
-## Engineering Challenges
-
-Some of the most interesting engineering problems solved during development included:
-
-- Maintaining accurate real-world context using multiple free-tier APIs.
-- Designing persistent user memory that is private, extensible and easy to debug.
-- Sharing the same reasoning engine across both voice and text interactions.
-- Synchronizing reminders and scheduled events with background workers.
-- Injecting contextual information without overwhelming the language model.
-- Building a modular architecture that can accommodate future LLMs and tools.
-
-## Repository Structure
-
-```text
-backend/
-  agent.py
-  auth.py
-  main.py
-  scheduler.py
-  world_state.py
-  db/
-  routers/
-  tools/
-frontend/
-  app/
-  components/
-  lib/
-  public/
-rag/
-  seed.py
-  system_prompt.md
-deploy/
-  Caddyfile
-  install.sh
-  start.sh
-  update.sh
-  setup-vps.sh
-```
+- **Web:** Next.js 14, React 18, TypeScript, Tailwind CSS, service worker/PWA.
+- **API and text agent:** Python, FastAPI, LangGraph, LangChain, OpenAI.
+- **Voice:** LiveKit Agents SDK, Deepgram STT, OpenAI LLM and TTS, Silero VAD.
+- **Data and authentication:** Supabase Auth, PostgreSQL, pgvector, PostgresSaver, Mem0.
+- **Integrations:** TomTom maps and routing, Tavily web search, APScheduler.
 
 ## Roadmap
 
-| Capability | Status |
-| --- | --- |
-| Persistent Memory | Completed |
-| Voice Conversations | Completed |
-| Relationship Intelligence | Completed |
-| Context Awareness | Completed |
-| Goal Management | Completed |
-| Reminder Engine | Completed |
-| Web Search | Completed |
-| Multi-LLM Routing | Planned |
-| MCP Integration | Planned |
-| Document Search | Planned |
-| Code Execution | Planned |
-| Computer Control | Planned |
+| Area | Status | Notes |
+| --- | --- | --- |
+| Streaming text chat and resumable conversations | Implemented | LangGraph with PostgresSaver. |
+| LiveKit voice with shared tools | Implemented | Voice and text use the same tool objects and base instructions. |
+| People, goals, reminders, maps, and web search | Implemented | Available through API routes and agent tools. |
+| Google Calendar integration | In progress | The current calendar fetch function is a stub. |
+| Safe Mem0 current-state supersession | In progress | Previous deletion logic was disabled after data loss; a safe replacement is not implemented. |
+| Groq fallback routing | Planned | The dependency is present, but routing is not wired into the agent. |
+| Email and document search | Proposed | Listed as ideas in `TOOLS.md`, not committed features. |
 
-## Project Gallery
+## Setup and Run Locally
 
-Screenshots and architecture visuals will be added here as the product matures.
+Prerequisites: Python 3.12, Node.js, and a Supabase project. External integrations require their own provider credentials.
 
-- Dashboard
-- Voice Mode
-- Memory System
-- Goal Tracking
-- Relationship Management
-- World Context
-- Architecture Diagram
+1. Create local environment files from the examples:
 
-## Lessons Learned
+   ```bash
+   cp .env.example .env
+   cp frontend/.env.local.example frontend/.env.local
+   ```
 
-JARVIS taught me that building useful AI systems is less about selecting the best language model and more about engineering the ecosystem around it. Memory, context, tools, scheduling, user modelling and real-world awareness contribute just as much to perceived intelligence as the model itself.
+2. Configure backend values in `.env`, including `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `DATABASE_URL`. Set the frontend Supabase URL and anon key in `frontend/.env.local`, and set `NEXT_PUBLIC_JARVIS_URL` to `http://localhost:8000`.
 
-This project continues to evolve as a long-term exploration into what a truly personal AI operating system could become.
+3. Apply the SQL files in `backend/db/migrations/` to the Supabase project. The backend also initializes the LangGraph checkpoint tables at startup.
 
-## Installation
+4. Install and start the backend from the repository root:
 
-### 1. Environment
+   ```bash
+   pip install -r backend/requirements.txt
+   uvicorn backend.main:app --reload --port 8000
+   ```
 
-```bash
-cp .env.example .env
-# Required: OPENAI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-# Required: TOMTOM_API_KEY (free at developer.tomtom.com — no card required)
-# Optional: TAVILY_API_KEY, OPENWEATHER_API_KEY
-# Optional: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL (for voice)
+5. In another terminal, install and start the frontend:
 
-cp frontend/.env.local.example frontend/.env.local
-# Required: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
-# Set: NEXT_PUBLIC_JARVIS_URL=http://localhost:8000
-```
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
-### 2. Database migrations
+   Open `http://localhost:3000`.
 
-Run in order in your Supabase SQL Editor:
+6. To run the optional voice worker, configure LiveKit and Deepgram credentials, then run `python -m backend.livekit_agent dev` from the repository root.
 
-```sql
-backend/db/migrations/001_core.sql
-backend/db/migrations/002_relationships.sql
-backend/db/migrations/003_rag.sql
-backend/db/migrations/004_rls.sql
-```
+For deployment, adapt the scripts and configuration in [`deploy/`](deploy/) to your environment. Keep secrets in environment files or a secret manager, never in the repository.
 
-Then run these fixes:
+## Open Question
 
-```sql
--- Allow reminders without a linked person
-ALTER TABLE public.relationship_events ALTER COLUMN person_id DROP NOT NULL;
-
--- TomTom usage tracking
-CREATE TABLE IF NOT EXISTS public.api_usage (
-  user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  date date NOT NULL DEFAULT CURRENT_DATE,
-  tomtom_calls int NOT NULL DEFAULT 0,
-  PRIMARY KEY (user_id, date)
-);
-
-CREATE OR REPLACE FUNCTION increment_tomtom_usage(p_user_id uuid, p_date date)
-RETURNS void AS $$
-BEGIN
-  INSERT INTO public.api_usage (user_id, date, tomtom_calls)
-  VALUES (p_user_id, p_date, 1)
-  ON CONFLICT (user_id, date)
-  DO UPDATE SET tomtom_calls = api_usage.tomtom_calls + 1;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-```
-
-### 3. Run locally
-
-```bash
-# Backend
-pip install -r backend/requirements.txt
-uvicorn backend.main:app --reload --port 8000
-
-# Frontend (separate terminal)
-cd frontend && npm install && npm run dev
-
-# Voice agent (separate terminal, optional)
-cd /path/to/jarvis
-python -m backend.livekit_agent
-```
-
-Open http://localhost:3000
-
-## Deployment
-
-```bash
-# 1. Push to GitHub
-git add . && git commit -m "update" && git push origin main
-
-# 2. SSH to VPS and deploy
-ssh deploy@89.167.93.25
-cd /home/deploy/apps/jarvis && git pull
-
-# Restart backend
-pm2 restart jarvis-backend
-
-# Restart frontend (after UI changes)
-cd frontend && npm run build && pm2 restart jarvis-frontend
-
-# Restart voice agent (after livekit_agent.py changes)
-pm2 restart jarvis-voice
-
-# Check logs
-pm2 logs jarvis-backend --lines 50 --nostream
-pm2 logs jarvis-voice --lines 50 --nostream
-```
+Is `https://jarvis-eta-self.vercel.app` still the intended public live-demo URL? It is listed as an allowed frontend origin in the repository, but its current deployment status is not verifiable from the code.
